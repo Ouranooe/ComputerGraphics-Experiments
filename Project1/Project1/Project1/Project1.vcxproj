@@ -129,6 +129,7 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="basewin.h" />
+    <ClInclude Include="CoordinateTransform.h" />
     <ClInclude Include="framework.h" />
     <ClInclude Include="Project1.h" />
     <ClInclude Include="Resource.h" />
