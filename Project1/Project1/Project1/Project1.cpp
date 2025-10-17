@@ -57,6 +57,7 @@ void OnPaint(HWND hwnd)
     pRenderTarget->BeginDraw();
     pRenderTarget->Clear(D2D1::ColorF(D2D1::ColorF::White));
 
+
     // ===== 坐标系绘制 =====
 
     // 原点标记
@@ -65,35 +66,63 @@ void OnPaint(HWND hwnd)
     pBrush->SetColor(D2D1::ColorF(D2D1::ColorF::Red));
     pRenderTarget->FillEllipse(origin, pBrush);
 
-    // 坐标轴线
+    //-----坐标轴-----
     D2D1_SIZE_F rtSize = pRenderTarget->GetSize();
     float halfWidth = rtSize.width / 2.0f;
     float halfHeight = rtSize.height / 2.0f;
-
-    pBrush->SetColor(D2D1::ColorF(D2D1::ColorF::Gray));
-
+    pBrush->SetColor(D2D1::ColorF(D2D1::ColorF::Black));
     // X轴（水平线）
     pRenderTarget->DrawLine(
         D2D1::Point2F(-halfWidth, 0),
         D2D1::Point2F(halfWidth, 0),
         pBrush, 1.5f);
-
     // Y轴（垂直线）
     pRenderTarget->DrawLine(
         D2D1::Point2F(0, -halfHeight),
         D2D1::Point2F(0, halfHeight),
         pBrush, 1.5f);
-
     // X轴箭头
     pRenderTarget->DrawLine(D2D1::Point2F(halfWidth - 10, 5), D2D1::Point2F(halfWidth, 0), pBrush, 1.0f);
     pRenderTarget->DrawLine(D2D1::Point2F(halfWidth - 10, -5), D2D1::Point2F(halfWidth, 0), pBrush, 1.0f);
-
     // Y轴箭头
     pRenderTarget->DrawLine(D2D1::Point2F(-5, halfHeight - 10), D2D1::Point2F(0, halfHeight), pBrush, 1.0f);
     pRenderTarget->DrawLine(D2D1::Point2F(5, halfHeight - 10), D2D1::Point2F(0, halfHeight), pBrush, 1.0f);
+    //-----坐标轴end-----
+    pBrush->SetColor(D2D1::ColorF(D2D1::ColorF::Black));
+    //-----外圆角矩形-----
+    D2D1_ROUNDED_RECT roundedRect_out = D2D1::RoundedRect(
+        D2D1::RectF(-264.0f, -184.0f, 264.0f, 184.0f), // 中心对称坐标
+        56.0f, 56.0f                               // 圆角半径 radiusX, radiusY
+    );
+    pRenderTarget->DrawRoundedRectangle(&roundedRect_out, pBrush, 1.0f);//第三个参数是线条宽度
+    //-----外圆角矩形end-----
+
+    //-----内圆角矩形-----
+    D2D1_ROUNDED_RECT roundedRect_in = D2D1::RoundedRect(
+        D2D1::RectF(-184.0f, -120.0f, 184.0f, 120.0f), // 中心对称坐标
+        24.0f, 24.0f                               // 圆角半径 radiusX, radiusY
+    );
+    pRenderTarget->DrawRoundedRectangle(&roundedRect_in, pBrush, 1.0f);//第三个参数是线条宽度
+    //-----内圆角矩形end-----
+
+    //-----圆-----
+    //D2D1_ELLIPSE circle = D2D1::Ellipse(
+    //    D2D1::Point2F(200.0f, 200.0f),  // 圆心
+    //    50.0f,                          // radiusX
+    //    50.0f                           // radiusY
+    //);
+    double circle_r = 7 / 2 * 8;
+    D2D1_ELLIPSE c1 = D2D1::Ellipse(D2D1::Point2F(-26 * 8, 16 * 8), circle_r, circle_r);
+    D2D1_ELLIPSE c2 = D2D1::Ellipse(D2D1::Point2F(26 * 8, 16 * 8), circle_r, circle_r);
+    D2D1_ELLIPSE c3 = D2D1::Ellipse(D2D1::Point2F(-26 * 8, -16 * 8), circle_r, circle_r);
+    D2D1_ELLIPSE c4 = D2D1::Ellipse(D2D1::Point2F(26 * 8, -16 * 8), circle_r, circle_r);
+    pRenderTarget->DrawEllipse(&c1, pBrush, 1.0f);
+    pRenderTarget->DrawEllipse(&c2, pBrush, 1.0f);
+    pRenderTarget->DrawEllipse(&c3, pBrush, 1.0f);
+    pRenderTarget->DrawEllipse(&c4, pBrush, 1.0f);
+    //-----圆end-----
 
     hr = pRenderTarget->EndDraw();
-
     if (hr == D2DERR_RECREATE_TARGET)
     {
         DiscardGraphicsResources();
@@ -150,7 +179,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
     HWND hwnd = CreateWindowEx(
         0,
         CLASS_NAME,
-        L"Direct2D 坐标系演示",
+        L"2023115323侯懿",
         WS_OVERLAPPEDWINDOW,
         CW_USEDEFAULT, CW_USEDEFAULT, 800, 600,
         nullptr,
