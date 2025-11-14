@@ -3,12 +3,13 @@
 #include <windows.h>
 #include <d2d1.h>
 #include <vector>
-#include <algorithm>
+#include <algorithm> 
 #include <cmath>
 #include <stack>
 #include <queue>
 #include <cstdint>
 #include <limits>
+
 
 #pragma comment(lib, "d2d1.lib")
 
@@ -26,7 +27,7 @@
 #define ID_EDIT_CLEAR 200
 #define ID_EDIT_FINISH_POLYGON 201
 #define ID_EDIT_FINISH_BSPLINE 202
-#define ID_FILL_SCANLINE 300      // 扫描线填充（针对多边形/矩形）
+#define ID_FILL_SCANLINE 300      // 扫描线填充（点击封闭图形）
 #define ID_FILL_FENCE_MODE 301    // 栅栏填充（点击种子点）
 #define IDT_FENCE_FILL 5001       // 栅栏填充异步处理的计时器ID
 
@@ -53,7 +54,8 @@ enum DrawMode {
     RECTANGLE,
     POLYGON,
     BSPLINE,
-    FILL_FENCE
+    FILL_FENCE,          // 栅栏填充模式
+    FILL_SCANLINE_MODE   // 扫描线填充模式（点击封闭图形）
 };
 
 struct Point { int x, y; Point(int x = 0, int y = 0) : x(x), y(y) {} };
@@ -74,7 +76,7 @@ bool isDrawing = false;
 bool g_hasHover = false;
 Point g_hoverPoint; // 当前鼠标位置，用作多边形/样条的动态预览
 
-// ====== 新增：栅栏填充结果与作业 ======
+// ====== 栅栏填充结果与作业 ======
 struct Span { int y, x0, x1; };
 struct FenceFillRegion { std::vector<Span> spans; COLORREF color; };
 std::vector<FenceFillRegion> g_fenceFills; // 已完成的栅栏填充区域
@@ -87,10 +89,23 @@ struct FenceFillJob {
     COLORREF fillColor = RGB(255, 200, 200); // 填充颜色
     std::vector<uint32_t> snapshot;   // 边界快照
     std::vector<unsigned char> vis;   // 访问标记
-    std::vector<Span> partialSpans;   // 进行中的结果（边填边画）
+    std::vector<Span> partialSpans;   // 逻辑填充结果（所有span）
     std::vector<Point> stack;         // 扫描线种子栈
     bool touchedEdge = false;         // 是否触达窗口边界（判定非封闭）
+
+    // 动画阶段控制
+    bool regionReady = false;         // true 表示逻辑填充已完成，只做动画
+    int  sweepX = 0;                  // 当前“从右往左”扫描的可见左边界
 } g_fillJob;
+
+// 栅栏填充动画速度：每个计时器 tick 向左移动多少像素
+int g_fenceFillSweepPixelsPerTick = 3;
+
+// 控制栅栏填充动画速度的函数（不在界面显示）
+void SetFenceFillSpeed(int pixelsPerTick) {
+    if (pixelsPerTick <= 0) pixelsPerTick = 1;
+    g_fenceFillSweepPixelsPerTick = pixelsPerTick;
+}
 
 // ================== D2D 资源管理  ==================
 HRESULT CreateD2DResources(HWND hwnd) {
@@ -344,11 +359,108 @@ static void FillPolygonScanlineEx(HDC hdc, const std::vector<Point>& pts, COLORR
     SelectObject(hdc, oldPen); DeleteObject(hPen);
 }
 
+// ======== 点在图形内判定，用于“扫描线填充模式”点击 ========
+static bool PointInPolygon(const std::vector<Point>& poly, int x, int y) {
+    if (poly.size() < 3) return false;
+    bool inside = false;
+    size_t n = poly.size();
+    for (size_t i = 0, j = n - 1; i < n; j = i++) {
+        const Point& pi = poly[i];
+        const Point& pj = poly[j];
+        bool intersect = ((pi.y > y) != (pj.y > y)) &&
+            (x < (double)(pj.x - pi.x) * (y - pi.y) / (double)(pj.y - pi.y) + pi.x);
+        if (intersect) inside = !inside;
+    }
+    return inside;
+}
+
+static bool PointInRectShape(const Shape& s, int x, int y) {
+    if (s.points.size() < 2) return false;
+    int x0 = s.points[0].x, y0 = s.points[0].y;
+    int x1 = s.points[1].x, y1 = s.points[1].y;
+    int left = std::min(x0, x1);
+    int right = std::max(x0, x1);
+    int top = std::min(y0, y1);
+    int bottom = std::max(y0, y1);
+    return x >= left && x <= right && y >= top && y <= bottom;
+}
+
+static bool PointInCircleShape(const Shape& s, int x, int y) {
+    if (s.points.size() < 2) return false;
+    int cx = s.points[0].x;
+    int cy = s.points[0].y;
+    int dx = s.points[1].x - cx;
+    int dy = s.points[1].y - cy;
+    int r2 = dx * dx + dy * dy;
+
+    int px = x - cx;
+    int py = y - cy;
+    int d2 = px * px + py * py;
+    return d2 <= r2;
+}
+
+static bool ShapeContainsPoint(const Shape& s, int x, int y) {
+    switch (s.type) {
+    case RECTANGLE:
+        return PointInRectShape(s, x, y);
+    case POLYGON:
+        return PointInPolygon(s.points, x, y);
+    case CIRCLE_MIDPOINT:
+    case CIRCLE_BRESENHAM:
+        return PointInCircleShape(s, x, y);
+    default:
+        return false;
+    }
+}
+
+// ======== 圆的扫描线填充，用于 isFilled 的圆 ========
+static void FillCircleScanline(HDC hdc, const Point& center, int r, COLORREF color) {
+    if (r <= 0) return;
+    HPEN hPen = CreatePen(PS_SOLID, 1, color);
+    HGDIOBJ oldPen = SelectObject(hdc, hPen);
+
+    for (int dy = -r; dy <= r; ++dy) {
+        int y = center.y + dy;
+        int inside = r * r - dy * dy;
+        if (inside < 0) continue;
+        int dx = static_cast<int>(std::floor(std::sqrt(static_cast<double>(inside))));
+        int x0 = center.x - dx;
+        int x1 = center.x + dx;
+        MoveToEx(hdc, x0, y, nullptr);
+        LineTo(hdc, x1 + 1, y);
+    }
+
+    SelectObject(hdc, oldPen);
+    DeleteObject(hPen);
+}
+
 // ================== 绘制工具 ==================
 static void DrawFenceSpans(HDC dc, const std::vector<Span>& spans, COLORREF color) {
     if (spans.empty()) return;
     HPEN pen = CreatePen(PS_SOLID, 1, color); HGDIOBJ oldPen = SelectObject(dc, pen);
-    for (const auto& s : spans) { MoveToEx(dc, s.x0, s.y, nullptr); LineTo(dc, s.x1 + 1, s.y); }
+    for (const auto& s : spans) {
+        MoveToEx(dc, s.x0, s.y, nullptr);
+        LineTo(dc, s.x1 + 1, s.y);
+    }
+    SelectObject(dc, oldPen); DeleteObject(pen);
+}
+
+// “从右往左”扫的绘制：只画 x >= sweepX 的部分
+static void DrawFenceSpansSweepRightToLeft(HDC dc, const std::vector<Span>& spans,
+    COLORREF color, int sweepX) {
+    if (spans.empty()) return;
+    HPEN pen = CreatePen(PS_SOLID, 1, color); HGDIOBJ oldPen = SelectObject(dc, pen);
+
+    for (const auto& s : spans) {
+        int x0 = std::max(s.x0, sweepX);
+        int x1 = s.x1;
+        if (x0 <= x1) {
+            // 从右往左画一条线
+            MoveToEx(dc, x1, s.y, nullptr);
+            LineTo(dc, x0 - 1, s.y);
+        }
+    }
+
     SelectObject(dc, oldPen); DeleteObject(pen);
 }
 
@@ -358,20 +470,28 @@ static void DrawAllShapesToDC(HDC memDC, const RECT& rc, bool includeFenceFills,
 
     // 先填充图形，后画边界
     for (const auto& shape : shapes) {
-        if (shape.isFilled && (shape.type == POLYGON || shape.type == RECTANGLE)) {
-            if (shape.type == RECTANGLE && shape.points.size() == 2) {
+        if (shape.isFilled) {
+            if (shape.type == POLYGON && shape.points.size() >= 3) {
+                FillPolygonScanlineEx(memDC, shape.points, shape.fillColor);
+            }
+            else if (shape.type == RECTANGLE && shape.points.size() == 2) {
                 std::vector<Point> rect_pts = {
                     shape.points[0], Point(shape.points[1].x, shape.points[0].y),
                     shape.points[1], Point(shape.points[0].x, shape.points[1].y)
                 };
                 FillPolygonScanlineEx(memDC, rect_pts, shape.fillColor);
             }
-            else {
-                FillPolygonScanlineEx(memDC, shape.points, shape.fillColor);
+            else if ((shape.type == CIRCLE_MIDPOINT || shape.type == CIRCLE_BRESENHAM) &&
+                shape.points.size() == 2) {
+                int r = static_cast<int>(std::sqrt(
+                    std::pow(shape.points[1].x - shape.points[0].x, 2.0) +
+                    std::pow(shape.points[1].y - shape.points[0].y, 2.0)));
+                FillCircleScanline(memDC, shape.points[0], r, shape.fillColor);
             }
         }
     }
 
+    // 再画边界
     for (const auto& shape : shapes) {
         switch (shape.type) {
         case LINE_MIDPOINT:
@@ -416,12 +536,9 @@ static void DrawAllShapesToDC(HDC memDC, const RECT& rc, bool includeFenceFills,
             break;
         case BSPLINE:
         {
-            // 永久 B 样条：使用实线画笔绘制连续曲线
             HPEN hPen = CreatePen(PS_SOLID, 1, shape.color);
             HGDIOBJ oldPen = SelectObject(memDC, hPen);
-
             DrawBSpline(memDC, shape.points, shape.color);
-
             SelectObject(memDC, oldPen);
             DeleteObject(hPen);
         }
@@ -431,11 +548,18 @@ static void DrawAllShapesToDC(HDC memDC, const RECT& rc, bool includeFenceFills,
     }
 
     if (includeFenceFills) {
-        for (const auto& reg : g_fenceFills) DrawFenceSpans(memDC, reg.spans, reg.color);
-        if (g_fillJob.active && !g_fillJob.partialSpans.empty())
-            DrawFenceSpans(memDC, g_fillJob.partialSpans, g_fillJob.fillColor);
+        // 已完成的栅栏填充区域：直接画满
+        for (const auto& reg : g_fenceFills)
+            DrawFenceSpans(memDC, reg.spans, reg.color);
+
+        // 正在进行的栅栏填充：若逻辑填充已完成，则用右->左扫的动画
+        if (g_fillJob.active && g_fillJob.regionReady && !g_fillJob.partialSpans.empty()) {
+            DrawFenceSpansSweepRightToLeft(memDC, g_fillJob.partialSpans,
+                g_fillJob.fillColor, g_fillJob.sweepX);
+        }
     }
 
+    // 临时预览
     if (includeTempPreview && isDrawing && !tempPoints.empty()) {
         COLORREF tempColor = RGB(255, 0, 0);
         HPEN hTempPen = CreatePen(PS_DOT, 1, tempColor);
@@ -459,23 +583,18 @@ static void DrawAllShapesToDC(HDC memDC, const RECT& rc, bool includeFenceFills,
             Rectangle(memDC, tempPoints[0].x, tempPoints[0].y, tempPoints[1].x, tempPoints[1].y);
         }
         else if (currentMode == POLYGON) {
-            // 先画已确认的折线段
             for (size_t i = 0; i + 1 < tempPoints.size(); ++i)
                 DrawLineBresenham(memDC, tempPoints[i].x, tempPoints[i].y, tempPoints[i + 1].x, tempPoints[i + 1].y, RGB(128, 128, 128));
-            // 预览最后一个点到鼠标位置
             if (g_hasHover && !tempPoints.empty()) {
                 DrawLineBresenham(memDC, tempPoints.back().x, tempPoints.back().y, g_hoverPoint.x, g_hoverPoint.y, tempColor);
             }
         }
         else if (currentMode == BSPLINE) {
-            // 预览：把鼠标位置作为下一控制点加入
             if (tempPoints.size() >= 1) {
                 std::vector<Point> preview = tempPoints;
                 if (g_hasHover) preview.push_back(g_hoverPoint);
-                // 先画控制折线
                 for (size_t i = 0; i + 1 < preview.size(); ++i)
                     DrawLineBresenham(memDC, preview[i].x, preview[i].y, preview[i + 1].x, preview[i + 1].y, RGB(160, 160, 160));
-                // 再画样条：此时使用的是 PS_DOT 画笔，效果为虚线
                 DrawBSpline(memDC, preview, tempColor);
             }
         }
@@ -488,7 +607,6 @@ static void DrawAllShapesToDC(HDC memDC, const RECT& rc, bool includeFenceFills,
 
 // ================== 栅栏填充 ==================
 static inline bool ColorEqualRGB(uint32_t pix, COLORREF rgb) {
-    // pix: 0x00BBGGRR (DIB 32bpp BGRA，A未用)
     BYTE r = GetRValue(rgb), g = GetGValue(rgb), b = GetBValue(rgb);
     BYTE pr = (BYTE)(pix & 0xFF); BYTE pg = (BYTE)((pix >> 8) & 0xFF); BYTE pb = (BYTE)((pix >> 16) & 0xFF);
     return pr == r && pg == g && pb == b;
@@ -510,7 +628,6 @@ static void SnapshotScene(std::vector<uint32_t>& out, int& w, int& h) {
     DrawAllShapesToDC(memDC, rc, /*includeFenceFills=*/false, /*includeTempPreview=*/false);
 
     out.resize(static_cast<size_t>(w) * static_cast<size_t>(h));
-
     memcpy(out.data(), bits, out.size() * sizeof(uint32_t));
 
     SelectObject(memDC, oldBmp);
@@ -536,14 +653,24 @@ static void StartFenceFillJob(int sx, int sy) {
     if (job.width == 0 || job.height == 0) return;
 
     if (!InBounds(sx, sy, job.width, job.height)) return;
-    if (IsFence(job, sx, sy)) { MessageBox(g_hwnd, TEXT("请点击封闭区域内部，不要点在边界上。"), TEXT("栅栏填充"), MB_OK | MB_ICONINFORMATION); return; }
+    if (IsFence(job, sx, sy)) {
+        MessageBox(g_hwnd, TEXT("请点击封闭区域内部，不要点在边界上。"), TEXT("栅栏填充"), MB_OK | MB_ICONINFORMATION);
+        return;
+    }
 
     job.seedX = sx; job.seedY = sy; job.active = true; job.touchedEdge = false;
     job.vis.assign(static_cast<size_t>(job.width) * job.height, 0);
     job.stack.clear(); job.partialSpans.clear(); job.stack.emplace_back(sx, sy);
+    job.regionReady = false;
+    job.sweepX = job.width;  // 从最右边开始往左扫
 
     g_fillJob = std::move(job);
-    SetTimer(g_hwnd, IDT_FENCE_FILL, 1, nullptr);
+
+    // 设置一个合理的动画速度（可在代码里调整）
+    SetFenceFillSpeed(9);
+
+    // 定时器周期稍微大一点，看得清楚动画（例如 20ms）
+    SetTimer(g_hwnd, IDT_FENCE_FILL, 10, nullptr);
 }
 
 // 单步处理：扫描线式的区域生长，返回是否“已完成”
@@ -579,7 +706,6 @@ static bool FenceFillStep(int budget) {
             if (ny < 0 || ny >= H) { J.touchedEdge = true; return; }
             int cx = xl;
             while (cx <= xr) {
-                // 跳过已访问或边界
                 while (cx <= xr) {
                     size_t id2 = static_cast<size_t>(ny) * W + cx;
                     if (!J.vis[id2] && !IsFence(J, cx, ny)) break; else cx++;
@@ -591,7 +717,6 @@ static bool FenceFillStep(int budget) {
                     if (J.vis[id2] || IsFence(J, cx, ny)) break; else cx++;
                 }
                 int endx = cx - 1;
-                // 选择中点入栈，降低栈规模
                 J.stack.emplace_back((start + endx) / 2, ny);
             }
             };
@@ -610,7 +735,6 @@ static void FinishFenceFillJob() {
     if (!g_fillJob.active) return;
 
     if (g_fillJob.touchedEdge) {
-        // 未封闭：丢弃结果并提示
         g_fillJob = FenceFillJob();
         MessageBox(g_hwnd, TEXT("未发现封闭图形或区域与窗口边缘连通，已取消栅栏填充。"), TEXT("栅栏填充"), MB_OK | MB_ICONWARNING);
         return;
@@ -664,7 +788,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         AppendMenu(hMenuBar, MF_POPUP, (UINT_PTR)hDrawMenu, TEXT("绘图"));
 
         HMENU hFillMenu = CreatePopupMenu();
-        AppendMenu(hFillMenu, MF_STRING, ID_FILL_SCANLINE, TEXT("扫描线填充 (最后一个多边形/矩形)"));
+        AppendMenu(hFillMenu, MF_STRING, ID_FILL_SCANLINE, TEXT("扫描线填充 (点击封闭图形)"));
         AppendMenu(hFillMenu, MF_STRING, ID_FILL_FENCE_MODE, TEXT("栅栏填充模式 (点击区域内部)"));
         AppendMenu(hMenuBar, MF_POPUP, (UINT_PTR)hFillMenu, TEXT("填充"));
 
@@ -683,7 +807,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     case WM_COMMAND:
     {
         int id = LOWORD(wParam);
-        if ((id >= ID_DRAW_LINE_MIDPOINT && id <= ID_DRAW_BSPLINE) || id == ID_FILL_FENCE_MODE) {
+        if ((id >= ID_DRAW_LINE_MIDPOINT && id <= ID_DRAW_BSPLINE) ||
+            id == ID_FILL_FENCE_MODE || id == ID_FILL_SCANLINE) {
             isDrawing = false; tempPoints.clear(); g_hasHover = false;
         }
 
@@ -698,19 +823,15 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         case ID_DRAW_RECTANGLE: currentMode = RECTANGLE; break;
         case ID_DRAW_POLYGON:  currentMode = POLYGON;  break;
         case ID_DRAW_BSPLINE:  currentMode = BSPLINE;  break;
+
         case ID_FILL_FENCE_MODE:
             currentMode = FILL_FENCE; // 等待点击种子点
             break;
 
         case ID_FILL_SCANLINE:
             if (currentExperiment == 2) {
-                for (int i = static_cast<int>(shapes.size()) - 1; i >= 0; --i) {
-                    if (shapes[i].type == POLYGON || shapes[i].type == RECTANGLE) {
-                        shapes[i].isFilled = true; shapes[i].fillColor = RGB(200, 200, 255);
-                        InvalidateRect(hwnd, nullptr, FALSE);
-                        break;
-                    }
-                }
+                // 进入扫描线填充模式：点击封闭多边形/矩形/圆内部完成填充
+                currentMode = FILL_SCANLINE_MODE;
             }
             break;
 
@@ -743,10 +864,22 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 // 栅栏填充：异步，不阻塞其它按钮
                 StartFenceFillJob(p.x, p.y);
             }
+            else if (currentMode == FILL_SCANLINE_MODE) {
+                // 扫描线填充模式：点击封闭多边形/矩形/圆内部进行填充
+                for (int i = static_cast<int>(shapes.size()) - 1; i >= 0; --i) {
+                    const Shape& s = shapes[i];
+                    if (ShapeContainsPoint(s, p.x, p.y)) {
+                        shapes[i].isFilled = true;
+                        shapes[i].fillColor = RGB(200, 200, 255);
+                        InvalidateRect(hwnd, nullptr, FALSE);
+                        break;
+                    }
+                }
+            }
             else if (currentMode == POLYGON || currentMode == BSPLINE) {
                 // 左键添加顶点，并开启预览
                 tempPoints.push_back(p); isDrawing = true;
-                g_hasHover = false; // 新加点后，等待下一次移动更新悬浮
+                g_hasHover = false;
                 InvalidateRect(hwnd, nullptr, FALSE);
             }
             else if (currentMode != NONE) {
@@ -758,12 +891,10 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     case WM_MOUSEMOVE:
         if (currentExperiment == 2) {
             int mx = LOWORD(lParam), my = HIWORD(lParam);
-            // 传统拖动预览：直线/圆/矩形
             if (isDrawing && (currentMode == LINE_MIDPOINT || currentMode == LINE_BRESENHAM
                 || currentMode == CIRCLE_MIDPOINT || currentMode == CIRCLE_BRESENHAM || currentMode == RECTANGLE)) {
                 if (!tempPoints.empty()) { tempPoints.back() = Point(mx, my); InvalidateRect(hwnd, nullptr, FALSE); }
             }
-            // 多边形/样条的“悬浮预览”
             else if ((currentMode == POLYGON || currentMode == BSPLINE) && !tempPoints.empty()) {
                 g_hasHover = true;
                 g_hoverPoint = Point(mx, my);
@@ -786,11 +917,37 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 
     case WM_TIMER:
         if (wParam == IDT_FENCE_FILL) {
-            if (!g_fillJob.active) { KillTimer(hwnd, IDT_FENCE_FILL); return 0; }
-            // 每tick处理一定预算，保证UI顺畅
-            bool done = FenceFillStep(1200);
+            if (!g_fillJob.active) {
+                KillTimer(hwnd, IDT_FENCE_FILL);
+                return 0;
+            }
+
+            if (!g_fillJob.regionReady) {
+                // 先把区域逻辑填充完整（这里给较大的预算，避免拖太久）
+                bool done = FenceFillStep(20000);
+                if (done) {
+                    g_fillJob.regionReady = true;
+                    // 若发现区域与边界连通，则视为不封闭，直接结束
+                    if (g_fillJob.touchedEdge) {
+                        FinishFenceFillJob();
+                        InvalidateRect(hwnd, nullptr, FALSE);
+                        return 0;
+                    }
+                }
+            }
+            else {
+                // 动画阶段：从右往左扫，逐步显示 partialSpans
+                g_fillJob.sweepX -= g_fenceFillSweepPixelsPerTick;
+                if (g_fillJob.sweepX <= 0) {
+                    // 动画结束：把结果提交到永久区域
+                    FinishFenceFillJob();
+                    InvalidateRect(hwnd, nullptr, FALSE);
+                    return 0;
+                }
+            }
+
             InvalidateRect(hwnd, nullptr, FALSE);
-            if (done) { FinishFenceFillJob(); InvalidateRect(hwnd, nullptr, FALSE); }
+            return 0;
         }
         return 0;
 
