@@ -1,891 +1,958 @@
-﻿#define NOMINMAX
-#define WIN32_LEAN_AND_MEAN
+﻿/********************************************************************************
+ *
+ *                      计算机图形学综合实验平台
+ *
+ *   功能：
+ *   1.  基础绘图算法:
+ *       - 直线: 中点法, Bresenham算法
+ *       - 圆: 中点圆算法, Bresenham圆算法
+ *   2.  几何图形绘制:
+ *       - 矩形 (GDI), 任意多边形, 3次B样条曲线
+ *   3.  填充算法:
+ *       - 扫描线填充 (边表与活动边表)
+ *       - 栅栏填充 (种子填充)
+ *   4.  交互设计:
+ *       - 菜单驱动模式选择
+ *       - 鼠标实时交互与动态预览
+ *       - 双缓冲技术防闪烁
+ *
+ *   编译环境: Visual Studio (Windows Desktop Application)
+ *   作者: Gemini AI Assistant
+ *   日期: 2025-11-14
+ *
+ ********************************************************************************/
+
 #include <windows.h>
-#include <d2d1.h>
 #include <vector>
 #include <algorithm>
 #include <cmath>
 #include <stack>
-#include <queue>
-#include <cstdint>
-#include <limits>
 
-#pragma comment(lib, "d2d1.lib")
+#pragma comment(lib, "gdi32.lib")
+#pragma comment(lib, "user32.lib")
 
-// ================== 全局常量和枚举 ==================
-// 菜单项ID
-#define ID_EXP_1 1001
-#define ID_EXP_2 1002
-#define ID_DRAW_LINE_MIDPOINT 101
-#define ID_DRAW_LINE_BRESENHAM 102
-#define ID_DRAW_CIRCLE_MIDPOINT 103
-#define ID_DRAW_CIRCLE_BRESENHAM 104
-#define ID_DRAW_RECTANGLE 105
-#define ID_DRAW_POLYGON 106
-#define ID_DRAW_BSPLINE 107
-#define ID_EDIT_CLEAR 200
-#define ID_EDIT_FINISH_POLYGON 201
-#define ID_EDIT_FINISH_BSPLINE 202
-#define ID_FILL_SCANLINE 300      // 扫描线填充（针对多边形/矩形）
-#define ID_FILL_FENCE_MODE 301    // 栅栏填充（自动栅栏线，不用种子点）
+ // --- 1. 常量与宏定义 ---
 
-// ================== 全局状态 ==================
-int currentExperiment = 1; // 1: 实验一, 2: 实验二
-HWND g_hwnd = nullptr;
+#define WINDOW_WIDTH 800
+#define WINDOW_HEIGHT 600
 
-// ================== 实验一==================
-ID2D1Factory* pFactory = nullptr;
-ID2D1HwndRenderTarget* pRenderTarget = nullptr;
-ID2D1SolidColorBrush* pBrush = nullptr;
+// 菜单ID定义
+#define ID_DRAW_LINE_MIDPOINT 1001
+#define ID_DRAW_LINE_BRESENHAM 1002
+#define ID_DRAW_CIRCLE_MIDPOINT 1003
+#define ID_DRAW_CIRCLE_BRESENHAM 1004
+#define ID_DRAW_RECTANGLE 1005
+#define ID_DRAW_POLYGON 1006
+#define ID_DRAW_BSPLINE 1007
+#define ID_FILL_SCANLINE 1008
+#define ID_FILL_FENCE 1009
+#define ID_EDIT_FINISH 1010
+#define ID_EDIT_CLEAR 1011
 
-const float DESIGN_WIDTH = 66.0f;
-const float DESIGN_HEIGHT = 46.0f;
-const float SCALE = 6.0f;
+ // --- 2. 数据结构设计 ---
 
-// ================== 实验二==================
-enum DrawMode {
-    NONE,
-    LINE_MIDPOINT,
-    LINE_BRESENHAM,
-    CIRCLE_MIDPOINT,
-    CIRCLE_BRESENHAM,
-    RECTANGLE,
-    POLYGON,
-    BSPLINE
-    // 注意：不再需要 FILL_FENCE 作为“模式”
+// 绘图模式枚举
+enum class DrawMode {
+	None,
+	DrawLineMidpoint,
+	DrawLineBresenham,
+	DrawCircleMidpoint,
+	DrawCircleBresenham,
+	DrawRectangle,
+	DrawPolygon,
+	DrawBSpline,
+	FillScanline,
+	FillFence
 };
 
-struct Point { int x, y; Point(int x = 0, int y = 0) : x(x), y(y) {} };
+// 坐标点结构
+struct Point {
+	int x, y;
+};
 
+// 图形对象结构
 struct Shape {
-    DrawMode type = NONE;
-    std::vector<Point> points;
-    COLORREF color = RGB(0, 0, 0);
-    bool isFilled = false;
-    COLORREF fillColor = RGB(255, 255, 255);
+	DrawMode type;          // 图形类型
+	std::vector<Point> vertices; // 顶点列表
+	COLORREF color;         // 颜色
+	bool filled;            // 是否填充
+	COLORREF fillColor;     // 填充颜色
 };
 
-std::vector<Shape> shapes;
-DrawMode currentMode = NONE;
-std::vector<Point> tempPoints;
-bool isDrawing = false;
-
-bool g_hasHover = false;
-Point g_hoverPoint; // 当前鼠标位置，用作多边形/样条的动态预览
-
-// ====== 栅栏填充结果 ======
-struct Span { int y, x0, x1; };
-struct FenceFillRegion { std::vector<Span> spans; COLORREF color; };
-std::vector<FenceFillRegion> g_fenceFills; // 已完成的栅栏填充区域
-
-// ================== D2D 资源管理  ==================
-HRESULT CreateD2DResources(HWND hwnd) {
-    if (pRenderTarget) return S_OK;
-    RECT rc; GetClientRect(hwnd, &rc);
-    D2D1_SIZE_U size = D2D1::SizeU(rc.right - rc.left, rc.bottom - rc.top);
-
-    HRESULT hr = D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, &pFactory);
-    if (SUCCEEDED(hr)) {
-        hr = pFactory->CreateHwndRenderTarget(
-            D2D1::RenderTargetProperties(),
-            D2D1::HwndRenderTargetProperties(hwnd, size),
-            &pRenderTarget);
-        if (SUCCEEDED(hr)) {
-            pRenderTarget->CreateSolidColorBrush(D2D1::ColorF(D2D1::ColorF::Black), &pBrush);
-        }
-    }
-    return hr;
+// B样条基函数
+void B_Spline_Base_Function(float t, float* b) {
+	float t2 = t * t;
+	float t3 = t2 * t;
+	b[0] = (-t3 + 3 * t2 - 3 * t + 1) / 6.0f;
+	b[1] = (3 * t3 - 6 * t2 + 4) / 6.0f;
+	b[2] = (-3 * t3 + 3 * t2 + 3 * t + 1) / 6.0f;
+	b[3] = t3 / 6.0f;
 }
 
-void DiscardD2DResources() {
-    if (pBrush) { pBrush->Release(); pBrush = nullptr; }
-    if (pRenderTarget) { pRenderTarget->Release(); pRenderTarget = nullptr; }
-    if (pFactory) { pFactory->Release(); pFactory = nullptr; }
+// 扫描线填充算法所需数据结构
+// 边结构
+struct Edge {
+	int ymax;      // 边的最大y值
+	float x;       // 边与当前扫描线的交点x坐标
+	float dx;      // 斜率的倒数, 1/k
+	Edge* next;    // 指向下一条边的指针
+};
+
+
+// --- 3. 全局变量 ---
+
+HWND g_hwnd;                       // 主窗口句柄
+HDC  g_hdcMem;                     // 后备缓冲DC
+HBITMAP g_hbmMem;                  // 后备缓冲位图
+HBRUSH g_hBrush;                   // 画刷
+HPEN g_hPen;                       // 画笔
+
+DrawMode g_currentMode = DrawMode::None; // 当前绘图模式
+std::vector<Shape> g_shapes;         // 存储所有已绘制的图形
+std::vector<Point> g_currentPoints; // 存储当前正在绘制的图形的顶点
+bool g_isDrawing = false;           // 标记是否正在绘制
+
+COLORREF g_drawColor = RGB(255, 0, 0); // 当前绘制颜色 (红色)
+COLORREF g_fillColor = RGB(0, 255, 0); // 当前填充颜色 (绿色)
+
+
+// --- 4. 函数声明 ---
+
+// 窗口过程函数
+LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
+
+// 绘图算法
+void DrawPixel(HDC hdc, int x, int y, COLORREF color);
+void DrawLineMidpoint(HDC hdc, int x1, int y1, int x2, int y2, COLORREF color);
+void DrawLineBresenham(HDC hdc, int x1, int y1, int x2, int y2, COLORREF color);
+void DrawCircleMidpoint(HDC hdc, int xc, int yc, int r, COLORREF color);
+void DrawCircleBresenham(HDC hdc, int xc, int yc, int r, COLORREF color);
+void DrawPolygon(HDC hdc, const std::vector<Point>& vertices, COLORREF color);
+void DrawBSpline(HDC hdc, const std::vector<Point>& controlPoints, COLORREF color);
+
+// 填充算法
+void ScanlineFill(HDC hdc, const std::vector<Point>& vertices, COLORREF color);
+void FenceFill(HDC hdc, int x, int y, COLORREF fillColor, COLORREF boundaryColor);
+
+// 渲染与交互
+void CreateMenuSystem(HWND hwnd);
+void OnPaint(HWND hwnd);
+void OnLButtonDown(int x, int y);
+void OnMouseMove(int x, int y);
+void ClearCanvas();
+void FinishDrawing();
+void RedrawAllShapes(HDC hdc);
+
+
+// --- 5. WinMain 主函数 ---
+
+int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow) {
+	WNDCLASS wc = {};
+	wc.lpfnWndProc = WndProc;
+	wc.hInstance = hInstance;
+	wc.lpszClassName = L"ComputerGraphicsLab";
+	wc.hbrBackground = (HBRUSH)GetStockObject(WHITE_BRUSH);
+	wc.hCursor = LoadCursor(NULL, IDC_ARROW);
+
+	RegisterClass(&wc);
+
+	g_hwnd = CreateWindowEx(
+		0,
+		L"ComputerGraphicsLab",
+		L"计算机图形学实验平台 by Gemini",
+		WS_OVERLAPPEDWINDOW,
+		CW_USEDEFAULT, CW_USEDEFAULT, WINDOW_WIDTH, WINDOW_HEIGHT,
+		NULL, NULL, hInstance, NULL
+	);
+
+	if (g_hwnd == NULL) {
+		return 0;
+	}
+
+	CreateMenuSystem(g_hwnd);
+	ShowWindow(g_hwnd, nCmdShow);
+	UpdateWindow(g_hwnd);
+
+	MSG msg = {};
+	while (GetMessage(&msg, NULL, 0, 0)) {
+		TranslateMessage(&msg);
+		DispatchMessage(&msg);
+	}
+
+	return 0;
 }
 
-// ================== 实验切换与状态重置 ==================
-void SwitchExperiment(int exp) {
-    if (currentExperiment == exp) return;
-    currentExperiment = exp;
-    DiscardD2DResources();
-    shapes.clear();
-    g_fenceFills.clear();
-    currentMode = NONE;
-    tempPoints.clear();
-    isDrawing = false;
-    g_hasHover = false;
-    InvalidateRect(g_hwnd, nullptr, TRUE);
+
+// --- 6. 窗口过程 (消息处理) ---
+
+LRESULT CALLBACK WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
+	switch (uMsg) {
+	case WM_CREATE:
+	{
+		// 初始化双缓冲
+		HDC hdc = GetDC(hwnd);
+		g_hdcMem = CreateCompatibleDC(hdc);
+		RECT rc;
+		GetClientRect(hwnd, &rc);
+		g_hbmMem = CreateCompatibleBitmap(hdc, rc.right - rc.left, rc.bottom - rc.top);
+		SelectObject(g_hdcMem, g_hbmMem);
+		ReleaseDC(hwnd, hdc);
+	}
+	break;
+
+	case WM_COMMAND:
+	{
+		int wmId = LOWORD(wParam);
+		// 解析菜单选择
+		switch (wmId) {
+		case ID_DRAW_LINE_MIDPOINT:
+			g_currentMode = DrawMode::DrawLineMidpoint;
+			g_currentPoints.clear();
+			g_isDrawing = false;
+			break;
+		case ID_DRAW_LINE_BRESENHAM:
+			g_currentMode = DrawMode::DrawLineBresenham;
+			g_currentPoints.clear();
+			g_isDrawing = false;
+			break;
+		case ID_DRAW_CIRCLE_MIDPOINT:
+			g_currentMode = DrawMode::DrawCircleMidpoint;
+			g_currentPoints.clear();
+			g_isDrawing = false;
+			break;
+		case ID_DRAW_CIRCLE_BRESENHAM:
+			g_currentMode = DrawMode::DrawCircleBresenham;
+			g_currentPoints.clear();
+			g_isDrawing = false;
+			break;
+		case ID_DRAW_RECTANGLE:
+			g_currentMode = DrawMode::DrawRectangle;
+			g_currentPoints.clear();
+			g_isDrawing = false;
+			break;
+		case ID_DRAW_POLYGON:
+			g_currentMode = DrawMode::DrawPolygon;
+			g_currentPoints.clear();
+			g_isDrawing = true; // 多边形需要持续添加点
+			break;
+		case ID_DRAW_BSPLINE:
+			g_currentMode = DrawMode::DrawBSpline;
+			g_currentPoints.clear();
+			g_isDrawing = true; // B样条需要持续添加点
+			break;
+		case ID_FILL_SCANLINE:
+			g_currentMode = DrawMode::FillScanline;
+			break;
+		case ID_FILL_FENCE:
+			g_currentMode = DrawMode::FillFence;
+			break;
+		case ID_EDIT_FINISH:
+			FinishDrawing();
+			break;
+		case ID_EDIT_CLEAR:
+			ClearCanvas();
+			break;
+		default:
+			return DefWindowProc(hwnd, uMsg, wParam, lParam);
+		}
+	}
+	break;
+
+	case WM_LBUTTONDOWN:
+	{
+		int x = LOWORD(lParam);
+		int y = HIWORD(lParam);
+		OnLButtonDown(x, y);
+	}
+	break;
+
+	case WM_MOUSEMOVE:
+	{
+		int x = LOWORD(lParam);
+		int y = HIWORD(lParam);
+		OnMouseMove(x, y);
+	}
+	break;
+
+	case WM_SIZE:
+	{
+		// 窗口大小改变时重建后备缓冲
+		if (g_hdcMem) {
+			DeleteObject(g_hbmMem);
+			HDC hdc = GetDC(hwnd);
+			RECT rc;
+			GetClientRect(hwnd, &rc);
+			g_hbmMem = CreateCompatibleBitmap(hdc, rc.right - rc.left, rc.bottom - rc.top);
+			SelectObject(g_hdcMem, g_hbmMem);
+			ReleaseDC(hwnd, hdc);
+			InvalidateRect(hwnd, NULL, FALSE); // 请求重绘
+		}
+	}
+	break;
+
+	case WM_PAINT:
+	{
+		OnPaint(hwnd);
+	}
+	break;
+
+	case WM_ERASEBKGND:
+		return 1; // 阻止背景擦除，防止闪烁
+
+	case WM_DESTROY:
+	{
+		DeleteObject(g_hbmMem);
+		DeleteDC(g_hdcMem);
+		PostQuitMessage(0);
+	}
+	break;
+
+	default:
+		return DefWindowProc(hwnd, uMsg, wParam, lParam);
+	}
+	return 0;
 }
 
-void ClearCanvas() {
-    shapes.clear();
-    g_fenceFills.clear();
-    tempPoints.clear();
-    isDrawing = false;
-    g_hasHover = false;
-    InvalidateRect(g_hwnd, nullptr, TRUE);
+
+// --- 7. 绘图算法模块 ---
+
+// 绘制一个像素点
+void DrawPixel(HDC hdc, int x, int y, COLORREF color) {
+	SetPixel(hdc, x, y, color);
 }
 
-// ================== 实验一渲染  ==================
-void RenderExperiment1(HWND hwnd) {
-    HRESULT hr = CreateD2DResources(hwnd);
-    if (FAILED(hr)) return;
+// 中点法直线算法
+void DrawLineMidpoint(HDC hdc, int x1, int y1, int x2, int y2, COLORREF color) {
+	int dx = abs(x2 - x1);
+	int dy = abs(y2 - y1);
+	int incX = (x2 > x1) ? 1 : -1;
+	int incY = (y2 > y1) ? 1 : -1;
 
-    PAINTSTRUCT ps; BeginPaint(hwnd, &ps);
-    pRenderTarget->BeginDraw();
-    pRenderTarget->Clear(D2D1::ColorF(D2D1::ColorF::White));
+	int x = x1;
+	int y = y1;
 
-    D2D1_SIZE_F rtSize = pRenderTarget->GetSize();
-    float scaledWidth = DESIGN_WIDTH * SCALE;
-    float scaledHeight = DESIGN_HEIGHT * SCALE;
-    float offsetX = (rtSize.width - scaledWidth) / 2.0f;
-    float offsetY = (rtSize.height - scaledHeight) / 2.0f;
+	DrawPixel(hdc, x, y, color);
 
-    auto ToScreenX = [&](float x) { return offsetX + x * SCALE; };
-    auto ToScreenY = [&](float y) { return offsetY + y * SCALE; };
-
-    D2D1_ROUNDED_RECT outerRect = D2D1::RoundedRect(
-        D2D1::RectF(ToScreenX(0), ToScreenY(0), ToScreenX(66), ToScreenY(46)),
-        7.0f * SCALE, 7.0f * SCALE
-    );
-    pRenderTarget->DrawRoundedRectangle(&outerRect, pBrush, 0.8f * SCALE);
-
-    D2D1_ROUNDED_RECT innerRect = D2D1::RoundedRect(
-        D2D1::RectF(ToScreenX(11.5), ToScreenY(8), ToScreenX(54.5), ToScreenY(38)),
-        3.0f * SCALE, 3.0f * SCALE
-    );
-    pRenderTarget->DrawRoundedRectangle(&innerRect, pBrush, 0.8f * SCALE);
-
-    struct Hole { float x, y; };
-    Hole holes[] = { {6.5, 7.5}, {59.5, 7.5}, {6.5, 38.5}, {59.5, 38.5} };
-    for (const auto& h : holes) {
-        D2D1_ELLIPSE hole = D2D1::Ellipse(
-            D2D1::Point2F(ToScreenX(h.x), ToScreenY(h.y)),
-            3.5f * SCALE, 3.5f * SCALE
-        );
-        pRenderTarget->DrawEllipse(hole, pBrush, 0.8f * SCALE);
-    }
-
-    hr = pRenderTarget->EndDraw();
-    if (FAILED(hr) || hr == D2DERR_RECREATE_TARGET) { DiscardD2DResources(); }
-    EndPaint(hwnd, &ps);
+	if (dx > dy) { // 斜率 |k| < 1
+		int d = 2 * dy - dx;
+		for (int i = 0; i < dx; i++) {
+			x += incX;
+			if (d < 0) {
+				d += 2 * dy;
+			}
+			else {
+				y += incY;
+				d += 2 * (dy - dx);
+			}
+			DrawPixel(hdc, x, y, color);
+		}
+	}
+	else { // 斜率 |k| >= 1
+		int d = 2 * dx - dy;
+		for (int i = 0; i < dy; i++) {
+			y += incY;
+			if (d < 0) {
+				d += 2 * dx;
+			}
+			else {
+				x += incX;
+				d += 2 * (dx - dy);
+			}
+			DrawPixel(hdc, x, y, color);
+		}
+	}
 }
 
-// ================== GDI 基础绘图算法 ==================
-void DrawLineMidpoint(HDC hdc, int x0, int y0, int x1, int y1, COLORREF color) {
-    bool steep = abs(y1 - y0) > abs(x1 - x0);
-    if (steep) { std::swap(x0, y0); std::swap(x1, y1); }
-    if (x0 > x1) { std::swap(x0, x1); std::swap(y0, y1); }
+// Bresenham直线算法
+void DrawLineBresenham(HDC hdc, int x1, int y1, int x2, int y2, COLORREF color) {
+	int dx = abs(x2 - x1);
+	int dy = abs(y2 - y1);
+	int incX = (x2 > x1) ? 1 : -1;
+	int incY = (y2 > y1) ? 1 : -1;
 
-    int dx = x1 - x0;
-    int dy = abs(y1 - y0);
-    int d = 2 * dy - dx;
-    int dE = 2 * dy;
-    int dNE = 2 * (dy - dx);
-    int y = y0;
-    int ystep = (y0 < y1) ? 1 : -1;
+	int x = x1, y = y1;
+	DrawPixel(hdc, x, y, color);
 
-    for (int x = x0; x <= x1; x++) {
-        if (steep) SetPixel(hdc, y, x, color);
-        else SetPixel(hdc, x, y, color);
-        if (d <= 0) d += dE; else { d += dNE; y += ystep; }
-    }
+	if (dx > dy) { // |k| < 1
+		int e = -dx;
+		for (int i = 0; i < dx; i++) {
+			x += incX;
+			e += 2 * dy;
+			if (e >= 0) {
+				y += incY;
+				e -= 2 * dx;
+			}
+			DrawPixel(hdc, x, y, color);
+		}
+	}
+	else { // |k| >= 1
+		int e = -dy;
+		for (int i = 0; i < dy; i++) {
+			y += incY;
+			e += 2 * dx;
+			if (e >= 0) {
+				x += incX;
+				e -= 2 * dy;
+			}
+			DrawPixel(hdc, x, y, color);
+		}
+	}
 }
 
-void DrawLineBresenham(HDC hdc, int x0, int y0, int x1, int y1, COLORREF color) {
-    bool steep = abs(y1 - y0) > abs(x1 - x0);
-    if (steep) { std::swap(x0, y0); std::swap(x1, y1); }
-    if (x0 > x1) { std::swap(x0, x1); std::swap(y0, y1); }
-    int dx = x1 - x0, dy = abs(y1 - y0), error = dx / 2, y = y0;
-    int ystep = (y0 < y1) ? 1 : -1;
-    for (int x = x0; x <= x1; x++) {
-        SetPixel(hdc, steep ? y : x, steep ? x : y, color);
-        error -= dy; if (error < 0) { y += ystep; error += dx; }
-    }
+// 绘制8个对称点
+void DrawCirclePoints(HDC hdc, int xc, int yc, int x, int y, COLORREF color) {
+	DrawPixel(hdc, xc + x, yc + y, color);
+	DrawPixel(hdc, xc - x, yc + y, color);
+	DrawPixel(hdc, xc + x, yc - y, color);
+	DrawPixel(hdc, xc - x, yc - y, color);
+	DrawPixel(hdc, xc + y, yc + x, color);
+	DrawPixel(hdc, xc - y, yc + x, color);
+	DrawPixel(hdc, xc + y, yc - x, color);
+	DrawPixel(hdc, xc - y, yc - x, color);
 }
 
+// 中点圆算法
 void DrawCircleMidpoint(HDC hdc, int xc, int yc, int r, COLORREF color) {
-    if (r <= 0) return;
-    int x = 0, y = r, d = 1 - r;
-    auto plot8 = [&](int xo, int yo) {
-        SetPixel(hdc, xc + xo, yc + yo, color); SetPixel(hdc, xc - xo, yc + yo, color);
-        SetPixel(hdc, xc + xo, yc - yo, color); SetPixel(hdc, xc - xo, yc - yo, color);
-        SetPixel(hdc, xc + yo, yc + xo, color); SetPixel(hdc, xc - yo, yc + xo, color);
-        SetPixel(hdc, xc + yo, yc - xo, color); SetPixel(hdc, xc - yo, yc - xo, color);
-        };
-    plot8(x, y);
-    while (x < y) {
-        if (d < 0) d += 2 * x + 3; else { d += 2 * (x - y) + 5; y--; }
-        x++; plot8(x, y);
-    }
+	if (r <= 0) return;
+	int x = 0, y = r;
+	int d = 1 - r; // 初始决策参数 (5/4 - r，浮点数优化为整数)
+
+	DrawCirclePoints(hdc, xc, yc, x, y, color);
+
+	while (x < y) {
+		x++;
+		if (d < 0) {
+			d += 2 * x + 1;
+		}
+		else {
+			y--;
+			d += 2 * (x - y) + 1;
+		}
+		DrawCirclePoints(hdc, xc, yc, x, y, color);
+	}
 }
 
+// Bresenham圆算法
 void DrawCircleBresenham(HDC hdc, int xc, int yc, int r, COLORREF color) {
-    if (r <= 0) return;
-    int x = 0, y = r; int d = 3 - 2 * r;
-    auto plot8 = [&](int xo, int yo) {
-        SetPixel(hdc, xc + xo, yc + yo, color); SetPixel(hdc, xc - xo, yc + yo, color);
-        SetPixel(hdc, xc + xo, yc - yo, color); SetPixel(hdc, xc - xo, yc - yo, color);
-        SetPixel(hdc, xc + yo, yc + xo, color); SetPixel(hdc, xc - yo, yc + xo, color);
-        SetPixel(hdc, xc + yo, yc - xo, color); SetPixel(hdc, xc - yo, yc - xo, color);
-        };
-    plot8(x, y);
-    while (x < y) {
-        if (d < 0) d += 4 * x + 6; else { d += 4 * (x - y) + 10; y--; }
-        x++; plot8(x, y);
-    }
+	if (r <= 0) return;
+	int x = 0, y = r;
+	int e = 3 - 2 * r; // 初始误差
+
+	DrawCirclePoints(hdc, xc, yc, x, y, color);
+
+	while (x < y) {
+		if (e < 0) {
+			e = e + 4 * x + 6;
+		}
+		else {
+			e = e + 4 * (x - y) + 10;
+			y--;
+		}
+		x++;
+		DrawCirclePoints(hdc, xc, yc, x, y, color);
+	}
 }
 
-// ================== B样条曲线算法 ==================
-double B0(double t) { return (1 - t) * (1 - t) * (1 - t) / 6.0; }
-double B1(double t) { return (3 * t * t * t - 6 * t * t + 4) / 6.0; }
-double B2(double t) { return (-3 * t * t * t + 3 * t * t + 3 * t + 1) / 6.0; }
-double B3(double t) { return t * t * t / 6.0; }
-
-void DrawBSplineSegment(HDC hdc, const Point& p0, const Point& p1,
-    const Point& p2, const Point& p3, COLORREF /*color*/) {
-    const int steps = 50;
-
-    bool hasPrev = false;
-
-    for (int i = 0; i <= steps; ++i) {
-        double t = static_cast<double>(i) / steps;
-        double x = B0(t) * p0.x + B1(t) * p1.x + B2(t) * p2.x + B3(t) * p3.x;
-        double y = B0(t) * p0.y + B1(t) * p1.y + B2(t) * p2.y + B3(t) * p3.y;
-
-        int ix = static_cast<int>(x + 0.5);
-        int iy = static_cast<int>(y + 0.5);
-
-        if (!hasPrev) {
-            MoveToEx(hdc, ix, iy, nullptr);
-            hasPrev = true;
-        }
-        else {
-            LineTo(hdc, ix, iy);
-        }
-    }
+// 多边形绘制
+void DrawPolygon(HDC hdc, const std::vector<Point>& vertices, COLORREF color) {
+	if (vertices.size() < 2) return;
+	for (size_t i = 0; i < vertices.size() - 1; ++i) {
+		DrawLineMidpoint(hdc, vertices[i].x, vertices[i].y, vertices[i + 1].x, vertices[i + 1].y, color);
+	}
+	// 封闭多边形
+	DrawLineMidpoint(hdc, vertices.back().x, vertices.back().y, vertices.front().x, vertices.front().y, color);
 }
 
-void DrawBSpline(HDC hdc, const std::vector<Point>& ctrlPts, COLORREF color) {
-    if (ctrlPts.size() < 4) return;
-    for (size_t i = 0; i + 3 < ctrlPts.size(); ++i) {
-        DrawBSplineSegment(hdc, ctrlPts[i], ctrlPts[i + 1], ctrlPts[i + 2], ctrlPts[i + 3], color);
-    }
+// B样条曲线绘制
+void DrawBSpline(HDC hdc, const std::vector<Point>& controlPoints, COLORREF color) {
+	if (controlPoints.size() < 4) return;
+
+	for (size_t i = 0; i <= controlPoints.size() - 4; ++i) {
+		Point p1 = controlPoints[i];
+		Point p2 = controlPoints[i + 1];
+		Point p3 = controlPoints[i + 2];
+		Point p4 = controlPoints[i + 3];
+
+		Point lastPoint = p2;
+		for (float t = 0.01f; t <= 1.0f; t += 0.01f) {
+			float b[4];
+			B_Spline_Base_Function(t, b);
+			Point newPoint;
+			newPoint.x = (int)(b[0] * p1.x + b[1] * p2.x + b[2] * p3.x + b[3] * p4.x);
+			newPoint.y = (int)(b[0] * p1.y + b[1] * p2.y + b[2] * p3.y + b[3] * p4.y);
+			DrawLineMidpoint(hdc, lastPoint.x, lastPoint.y, newPoint.x, newPoint.y, color);
+			lastPoint = newPoint;
+		}
+	}
 }
 
-// ================== 扫描线填充（多边形） ==================
-struct Edge { double x, invSlope; int yMax; };
+// 扫描线填充
+void ScanlineFill(HDC hdc, const std::vector<Point>& vertices, COLORREF color) {
+	if (vertices.size() < 3) return;
 
-static void FillPolygonScanlineEx(HDC hdc, const std::vector<Point>& pts, COLORREF color) {
-    if (pts.size() < 3) return;
-    int n = static_cast<int>(pts.size());
+	// 1. 找出Y的最小值和最大值
+	int ymin = vertices[0].y;
+	int ymax = vertices[0].y;
+	for (const auto& v : vertices) {
+		if (v.y < ymin) ymin = v.y;
+		if (v.y > ymax) ymax = v.y;
+	}
 
-    int ymin = INT_MAX, ymax = INT_MIN;
-    for (const auto& p : pts) { ymin = std::min(ymin, p.y); ymax = std::max(ymax, p.y); }
-    if (ymin >= ymax) return;
+	// 2. 初始化边表 (ET)
+	std::vector<Edge*> ET(ymax - ymin + 1, nullptr);
 
-    std::vector<std::vector<Edge>> ET(ymax - ymin + 1);
+	// 3. 建立边表
+	for (size_t i = 0; i < vertices.size(); ++i) {
+		Point p1 = vertices[i];
+		Point p2 = vertices[(i + 1) % vertices.size()];
 
-    auto addEdge = [&](Point a, Point b) {
-        if (a.y == b.y) return; // 跳过水平边
-        if (a.y > b.y) std::swap(a, b);
-        Edge e; e.x = a.x; e.invSlope = static_cast<double>(b.x - a.x) / static_cast<double>(b.y - a.y);
-        e.yMax = b.y; // 上端y不参与扫描线填充
-        ET[a.y - ymin].push_back(e);
-        };
+		if (p1.y == p2.y) continue; // 忽略水平边
 
-    for (int i = 0; i < n; ++i) addEdge(pts[i], pts[(i + 1) % n]);
+		int y_start = min(p1.y, p2.y);
+		int y_end = max(p1.y, p2.y);
+		float x_start = (y_start == p1.y) ? p1.x : p2.x;
+		float dx = (float)(p2.x - p1.x) / (p2.y - p1.y);
 
-    std::vector<Edge> AET;
-    HPEN hPen = CreatePen(PS_SOLID, 1, color); HGDIOBJ oldPen = SelectObject(hdc, hPen);
+		Edge* newEdge = new Edge{ y_end, x_start, dx, nullptr };
 
-    for (int y = ymin; y < ymax; ++y) {
-        if (!ET[y - ymin].empty()) AET.insert(AET.end(), ET[y - ymin].begin(), ET[y - ymin].end());
-        AET.erase(std::remove_if(AET.begin(), AET.end(), [&](const Edge& e) { return e.yMax <= y; }), AET.end());
-        std::sort(AET.begin(), AET.end(), [](const Edge& a, const Edge& b) { return a.x < b.x; });
+		// 插入边表
+		int bucket = y_start - ymin;
+		if (!ET[bucket]) {
+			ET[bucket] = newEdge;
+		}
+		else {
+			Edge* current = ET[bucket];
+			// 插入排序，按x升序
+			if (newEdge->x < current->x) {
+				newEdge->next = current;
+				ET[bucket] = newEdge;
+			}
+			else {
+				while (current->next && newEdge->x > current->next->x) {
+					current = current->next;
+				}
+				newEdge->next = current->next;
+				current->next = newEdge;
+			}
+		}
+	}
 
-        for (size_t i = 0; i + 1 < AET.size(); i += 2) {
-            int x0 = static_cast<int>(std::ceil(AET[i].x));
-            int x1 = static_cast<int>(std::floor(AET[i + 1].x));
-            if (x0 <= x1) { MoveToEx(hdc, x0, y, nullptr); LineTo(hdc, x1 + 1, y); }
-        }
-        for (auto& e : AET) e.x += e.invSlope;
-    }
+	// 4. 初始化活动边表 (AET)
+	Edge* AET = nullptr;
 
-    SelectObject(hdc, oldPen); DeleteObject(hPen);
+	// 5. 逐行扫描填充
+	for (int y = ymin; y <= ymax; y++) {
+		// 从ET中取出新边并入AET
+		int bucket = y - ymin;
+		if (ET[bucket]) {
+			Edge* et_current = ET[bucket];
+			while (et_current) {
+				Edge* next_et = et_current->next;
+				// 将边插入AET，保持x有序
+				if (!AET || et_current->x < AET->x) {
+					et_current->next = AET;
+					AET = et_current;
+				}
+				else {
+					Edge* aet_current = AET;
+					while (aet_current->next && et_current->x > aet_current->next->x) {
+						aet_current = aet_current->next;
+					}
+					et_current->next = aet_current->next;
+					aet_current->next = et_current;
+				}
+				et_current = next_et;
+			}
+		}
+
+		// 填充AET中的区间
+		if (AET) {
+			Edge* current = AET;
+			while (current && current->next) {
+				for (int x = (int)ceil(current->x); x < (int)current->next->x; x++) {
+					DrawPixel(hdc, x, y, color);
+				}
+				current = current->next->next;
+			}
+		}
+
+		// 更新AET
+		Edge* prev = nullptr;
+		Edge* current = AET;
+		while (current) {
+			// 删除ymax == y的边
+			if (current->ymax == y) {
+				if (prev) {
+					prev->next = current->next;
+					delete current;
+					current = prev->next;
+				}
+				else {
+					AET = current->next;
+					delete current;
+					current = AET;
+				}
+			}
+			else {
+				// 更新x坐标
+				current->x += current->dx;
+				prev = current;
+				current = current->next;
+			}
+		}
+
+		// 对AET重新排序
+		if (AET) {
+			Edge* head = AET;
+			AET = nullptr;
+			while (head) {
+				Edge* temp = head;
+				head = head->next;
+				if (!AET || temp->x < AET->x) {
+					temp->next = AET;
+					AET = temp;
+				}
+				else {
+					Edge* p = AET;
+					while (p->next && temp->x > p->next->x) {
+						p = p->next;
+					}
+					temp->next = p->next;
+					p->next = temp;
+				}
+			}
+		}
+	}
 }
 
-// ================== 圆的扫描线填充（用于 isFilled 圆） ==================
-static void FillCircleScanline(HDC hdc, const Point& center, int r, COLORREF color) {
-    if (r <= 0) return;
-    HPEN hPen = CreatePen(PS_SOLID, 1, color);
-    HGDIOBJ oldPen = SelectObject(hdc, hPen);
 
-    for (int dy = -r; dy <= r; ++dy) {
-        int y = center.y + dy;
-        int inside = r * r - dy * dy;
-        if (inside < 0) continue;
-        int dx = static_cast<int>(std::floor(std::sqrt(static_cast<double>(inside))));
-        int x0 = center.x - dx;
-        int x1 = center.x + dx;
-        MoveToEx(hdc, x0, y, nullptr);
-        LineTo(hdc, x1 + 1, y);
-    }
+// 栅栏填充 (基于栈的扫描线种子填充)
+void FenceFill(HDC hdc, int x, int y, COLORREF fillColor, COLORREF boundaryColor) {
+	COLORREF current_color = GetPixel(hdc, x, y);
+	if (current_color == boundaryColor || current_color == fillColor) {
+		return;
+	}
 
-    SelectObject(hdc, oldPen);
-    DeleteObject(hPen);
+	std::stack<Point> s;
+	s.push({ x, y });
+
+	while (!s.empty()) {
+		Point p = s.top();
+		s.pop();
+
+		int curX = p.x;
+		int curY = p.y;
+
+		// 向右填充
+		while (curX < WINDOW_WIDTH && GetPixel(hdc, curX, curY) != boundaryColor) {
+			DrawPixel(hdc, curX, curY, fillColor);
+			curX++;
+		}
+		int xRight = curX - 1;
+
+		curX = p.x - 1;
+		// 向左填充
+		while (curX >= 0 && GetPixel(hdc, curX, curY) != boundaryColor) {
+			DrawPixel(hdc, curX, curY, fillColor);
+			curX--;
+		}
+		int xLeft = curX + 1;
+
+		// 检查上一行
+		curY = p.y + 1;
+		if (curY < WINDOW_HEIGHT) {
+			curX = xLeft;
+			while (curX <= xRight) {
+				bool needs_fill = false;
+				while (curX <= xRight && GetPixel(hdc, curX, curY) != boundaryColor && GetPixel(hdc, curX, curY) != fillColor) {
+					needs_fill = true;
+					curX++;
+				}
+				if (needs_fill) {
+					s.push({ curX - 1, curY });
+				}
+				// 跳过已填充或边界部分
+				while (curX <= xRight && (GetPixel(hdc, curX, curY) == boundaryColor || GetPixel(hdc, curX, curY) == fillColor)) {
+					curX++;
+				}
+			}
+		}
+
+		// 检查下一行
+		curY = p.y - 1;
+		if (curY >= 0) {
+			curX = xLeft;
+			while (curX <= xRight) {
+				bool needs_fill = false;
+				while (curX <= xRight && GetPixel(hdc, curX, curY) != boundaryColor && GetPixel(hdc, curX, curY) != fillColor) {
+					needs_fill = true;
+					curX++;
+				}
+				if (needs_fill) {
+					s.push({ curX - 1, curY });
+				}
+				// 跳过已填充或边界部分
+				while (curX <= xRight && (GetPixel(hdc, curX, curY) == boundaryColor || GetPixel(hdc, curX, curY) == fillColor)) {
+					curX++;
+				}
+			}
+		}
+	}
 }
 
-// ================== 栅栏填充相关工具 ==================
-static inline bool ColorEqualRGB(uint32_t pix, COLORREF rgb) {
-    BYTE r = GetRValue(rgb), g = GetGValue(rgb), b = GetBValue(rgb);
-    BYTE pr = (BYTE)(pix & 0xFF); BYTE pg = (BYTE)((pix >> 8) & 0xFF); BYTE pb = (BYTE)((pix >> 16) & 0xFF);
-    return pr == r && pg == g && pb == b;
+
+// --- 8. 交互与渲染模块 ---
+
+// 创建菜单
+void CreateMenuSystem(HWND hwnd) {
+	HMENU hMenu = CreateMenu();
+	HMENU hDrawMenu = CreateMenu();
+	HMENU hFillMenu = CreateMenu();
+	HMENU hEditMenu = CreateMenu();
+
+	// 绘图菜单
+	AppendMenu(hDrawMenu, MF_STRING, ID_DRAW_LINE_MIDPOINT, L"直线 (中点法)");
+	AppendMenu(hDrawMenu, MF_STRING, ID_DRAW_LINE_BRESENHAM, L"直线 (Bresenham)");
+	AppendMenu(hDrawMenu, MF_STRING, ID_DRAW_CIRCLE_MIDPOINT, L"圆 (中点法)");
+	AppendMenu(hDrawMenu, MF_STRING, ID_DRAW_CIRCLE_BRESENHAM, L"圆 (Bresenham)");
+	AppendMenu(hDrawMenu, MF_STRING, ID_DRAW_RECTANGLE, L"矩形");
+	AppendMenu(hDrawMenu, MF_STRING, ID_DRAW_POLYGON, L"多边形");
+	AppendMenu(hDrawMenu, MF_STRING, ID_DRAW_BSPLINE, L"B样条曲线");
+	AppendMenu(hMenu, MF_POPUP, (UINT_PTR)hDrawMenu, L"绘图");
+
+	// 填充菜单
+	AppendMenu(hFillMenu, MF_STRING, ID_FILL_SCANLINE, L"扫描线填充");
+	AppendMenu(hFillMenu, MF_STRING, ID_FILL_FENCE, L"栅栏填充");
+	AppendMenu(hMenu, MF_POPUP, (UINT_PTR)hFillMenu, L"填充");
+
+	// 编辑菜单
+	AppendMenu(hEditMenu, MF_STRING, ID_EDIT_FINISH, L"完成绘制");
+	AppendMenu(hEditMenu, MF_STRING, ID_EDIT_CLEAR, L"清空画布");
+	AppendMenu(hMenu, MF_POPUP, (UINT_PTR)hEditMenu, L"编辑");
+
+	SetMenu(hwnd, hMenu);
 }
 
-static void DrawFenceSpans(HDC dc, const std::vector<Span>& spans, COLORREF color) {
-    if (spans.empty()) return;
-    HPEN pen = CreatePen(PS_SOLID, 1, color); HGDIOBJ oldPen = SelectObject(dc, pen);
-    for (const auto& s : spans) {
-        MoveToEx(dc, s.x0, s.y, nullptr);
-        LineTo(dc, s.x1 + 1, s.y);
-    }
-    SelectObject(dc, oldPen); DeleteObject(pen);
+// 绘制事件
+void OnPaint(HWND hwnd) {
+	PAINTSTRUCT ps;
+	HDC hdc = BeginPaint(hwnd, &ps);
+
+	RECT rc;
+	GetClientRect(hwnd, &rc);
+
+	// 1. 在后备缓冲上绘制
+	// 清空后备缓冲为白色
+	FillRect(g_hdcMem, &rc, (HBRUSH)GetStockObject(WHITE_BRUSH));
+	// 重绘所有已保存的图形
+	RedrawAllShapes(g_hdcMem);
+
+	// 2. 将后备缓冲的内容一次性拷贝到屏幕上
+	BitBlt(hdc, 0, 0, rc.right - rc.left, rc.bottom - rc.top, g_hdcMem, 0, 0, SRCCOPY);
+
+	EndPaint(hwnd, &ps);
 }
 
-// 在内存DC中只画一个图形的黑色边界，白底，用于栅栏填充
-static void DrawSingleShapeBoundary(HDC memDC, const RECT& rc, const Shape& shape, COLORREF fenceColor) {
-    HBRUSH hBrush = CreateSolidBrush(RGB(255, 255, 255));
-    FillRect(memDC, &rc, hBrush);
-    DeleteObject(hBrush);
+// 鼠标左键按下事件
+void OnLButtonDown(int x, int y) {
+	switch (g_currentMode) {
+	case DrawMode::DrawLineMidpoint:
+	case DrawMode::DrawLineBresenham:
+	case DrawMode::DrawCircleMidpoint:
+	case DrawMode::DrawCircleBresenham:
+	case DrawMode::DrawRectangle:
+		if (!g_isDrawing) {
+			g_currentPoints.push_back({ x, y });
+			g_isDrawing = true;
+		}
+		else {
+			g_currentPoints.push_back({ x, y });
+			FinishDrawing();
+		}
+		break;
 
-    HPEN hPen = CreatePen(PS_SOLID, 1, fenceColor);
-    HGDIOBJ oldPen = SelectObject(memDC, hPen);
-    HGDIOBJ oldBrush = SelectObject(memDC, GetStockObject(NULL_BRUSH));
+	case DrawMode::DrawPolygon:
+	case DrawMode::DrawBSpline:
+		g_currentPoints.push_back({ x, y });
+		InvalidateRect(g_hwnd, NULL, FALSE);
+		break;
 
-    switch (shape.type) {
-    case RECTANGLE:
-        if (shape.points.size() == 2) {
-            Rectangle(memDC, shape.points[0].x, shape.points[0].y,
-                shape.points[1].x, shape.points[1].y);
-        }
-        break;
-    case POLYGON:
-        if (shape.points.size() >= 2) {
-            for (size_t i = 0; i < shape.points.size(); ++i) {
-                const Point& a = shape.points[i];
-                const Point& b = shape.points[(i + 1) % shape.points.size()];
-                DrawLineBresenham(memDC, a.x, a.y, b.x, b.y, fenceColor);
-            }
-        }
-        break;
-    case CIRCLE_MIDPOINT:
-    case CIRCLE_BRESENHAM:
-        if (shape.points.size() == 2) {
-            int r = static_cast<int>(std::sqrt(
-                std::pow(shape.points[1].x - shape.points[0].x, 2.0) +
-                std::pow(shape.points[1].y - shape.points[0].y, 2.0)));
-            DrawCircleBresenham(memDC, shape.points[0].x,
-                shape.points[0].y, r, fenceColor);
-        }
-        break;
-    default:
-        break;
-    }
+	case DrawMode::FillScanline:
+	{
+		// 寻找被点击的多边形
+		for (auto& shape : g_shapes) {
+			if (shape.type == DrawMode::DrawPolygon && !shape.filled) {
+				// 简化的命中测试：检查点是否在包围盒内
+				int minX = shape.vertices[0].x, maxX = shape.vertices[0].x;
+				int minY = shape.vertices[0].y, maxY = shape.vertices[0].y;
+				for (const auto& v : shape.vertices) {
+					if (v.x < minX) minX = v.x;
+					if (v.x > maxX) maxX = v.x;
+					if (v.y < minY) minY = v.y;
+					if (v.y > maxY) maxY = v.y;
+				}
+				if (x >= minX && x <= maxX && y >= minY && y <= maxY) {
+					ScanlineFill(g_hdcMem, shape.vertices, g_fillColor);
+					shape.filled = true;
+					shape.fillColor = g_fillColor;
+					InvalidateRect(g_hwnd, NULL, FALSE);
+					break;
+				}
+			}
+		}
+	}
+	break;
 
-    SelectObject(memDC, oldBrush);
-    SelectObject(memDC, oldPen);
-    DeleteObject(hPen);
+	case DrawMode::FillFence:
+		FenceFill(g_hdcMem, x, y, g_fillColor, g_drawColor);
+		InvalidateRect(g_hwnd, NULL, FALSE);
+		break;
+	}
 }
 
-// 为单个图形生成快照（只画边界）
-static void SnapshotShapeScene(const Shape& shape,
-    std::vector<uint32_t>& out, int& w, int& h) {
-    RECT rc; GetClientRect(g_hwnd, &rc);
-    w = rc.right - rc.left; h = rc.bottom - rc.top;
-    if (w <= 0 || h <= 0) return;
+// 鼠标移动事件
+void OnMouseMove(int x, int y) {
+	if (!g_isDrawing || g_currentPoints.empty()) return;
 
-    BITMAPINFO bi{}; bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-    bi.bmiHeader.biWidth = w; bi.bmiHeader.biHeight = -h;
-    bi.bmiHeader.biPlanes = 1; bi.bmiHeader.biBitCount = 32; bi.bmiHeader.biCompression = BI_RGB;
+	HDC hdc = GetDC(g_hwnd);
+	RECT rc;
+	GetClientRect(g_hwnd, &rc);
 
-    void* bits = nullptr; HDC hdc = GetDC(g_hwnd);
-    HDC memDC = CreateCompatibleDC(hdc);
-    HBITMAP dib = CreateDIBSection(memDC, &bi, DIB_RGB_COLORS, &bits, nullptr, 0);
-    HGDIOBJ oldBmp = SelectObject(memDC, dib);
+	// 使用双缓冲进行预览
+	FillRect(g_hdcMem, &rc, (HBRUSH)GetStockObject(WHITE_BRUSH));
+	RedrawAllShapes(g_hdcMem);
 
-    COLORREF fenceColor = RGB(0, 0, 0);
-    DrawSingleShapeBoundary(memDC, rc, shape, fenceColor);
+	Point startPoint = g_currentPoints[0];
+	switch (g_currentMode) {
+	case DrawMode::DrawLineMidpoint:
+		DrawLineMidpoint(g_hdcMem, startPoint.x, startPoint.y, x, y, g_drawColor);
+		break;
+	case DrawMode::DrawLineBresenham:
+		DrawLineBresenham(g_hdcMem, startPoint.x, startPoint.y, x, y, g_drawColor);
+		break;
+	case DrawMode::DrawCircleMidpoint:
+	{
+		int r = (int)sqrt(pow(x - startPoint.x, 2) + pow(y - startPoint.y, 2));
+		DrawCircleMidpoint(g_hdcMem, startPoint.x, startPoint.y, r, g_drawColor);
+	}
+	break;
+	case DrawMode::DrawCircleBresenham:
+	{
+		int r = (int)sqrt(pow(x - startPoint.x, 2) + pow(y - startPoint.y, 2));
+		DrawCircleBresenham(g_hdcMem, startPoint.x, startPoint.y, r, g_drawColor);
+	}
+	break;
+	case DrawMode::DrawRectangle:
+		Rectangle(g_hdcMem, startPoint.x, startPoint.y, x, y);
+		break;
+	case DrawMode::DrawPolygon:
+		if (g_currentPoints.size() > 0) {
+			for (size_t i = 0; i < g_currentPoints.size() - 1; ++i) {
+				DrawLineMidpoint(g_hdcMem, g_currentPoints[i].x, g_currentPoints[i].y, g_currentPoints[i + 1].x, g_currentPoints[i + 1].y, g_drawColor);
+			}
+			DrawLineMidpoint(g_hdcMem, g_currentPoints.back().x, g_currentPoints.back().y, x, y, g_drawColor);
+		}
+		break;
+	case DrawMode::DrawBSpline:
+		if (g_currentPoints.size() > 0) {
+			for (const auto& p : g_currentPoints) {
+				Ellipse(g_hdcMem, p.x - 3, p.y - 3, p.x + 3, p.y + 3); // 显示控制点
+			}
+			std::vector<Point> tempPoints = g_currentPoints;
+			tempPoints.push_back({ x, y });
+			if (tempPoints.size() > 1) {
+				for (size_t i = 0; i < tempPoints.size() - 1; ++i) {
+					DrawLineMidpoint(g_hdcMem, tempPoints[i].x, tempPoints[i].y, tempPoints[i + 1].x, tempPoints[i + 1].y, RGB(200, 200, 200));
+				}
+			}
+		}
+		break;
+	}
 
-    out.resize(static_cast<size_t>(w) * static_cast<size_t>(h));
-    memcpy(out.data(), bits, out.size() * sizeof(uint32_t));
-
-    SelectObject(memDC, oldBmp);
-    DeleteObject(dib); DeleteDC(memDC); ReleaseDC(g_hwnd, hdc);
+	BitBlt(hdc, 0, 0, rc.right, rc.bottom, g_hdcMem, 0, 0, SRCCOPY);
+	ReleaseDC(g_hwnd, hdc);
 }
 
-// 计算图形包围盒，用于限制扫描范围
-static void GetShapeBoundingBox(const Shape& s, int& minX, int& minY, int& maxX, int& maxY) {
-    minX = INT_MAX; minY = INT_MAX;
-    maxX = INT_MIN; maxY = INT_MIN;
-
-    if (s.type == RECTANGLE && s.points.size() == 2) {
-        int x0 = s.points[0].x, y0 = s.points[0].y;
-        int x1 = s.points[1].x, y1 = s.points[1].y;
-        minX = std::min(x0, x1); maxX = std::max(x0, x1);
-        minY = std::min(y0, y1); maxY = std::max(y0, y1);
-    }
-    else if (s.type == POLYGON && s.points.size() >= 3) {
-        for (const auto& p : s.points) {
-            minX = std::min(minX, p.x);
-            maxX = std::max(maxX, p.x);
-            minY = std::min(minY, p.y);
-            maxY = std::max(maxY, p.y);
-        }
-    }
-    else if ((s.type == CIRCLE_MIDPOINT || s.type == CIRCLE_BRESENHAM) && s.points.size() == 2) {
-        int cx = s.points[0].x;
-        int cy = s.points[0].y;
-        int dx = s.points[1].x - cx;
-        int dy = s.points[1].y - cy;
-        int r = static_cast<int>(std::sqrt(dx * dx + dy * dy));
-        minX = cx - r; maxX = cx + r;
-        minY = cy - r; maxY = cy + r;
-    }
-    else {
-        minX = minY = 0; maxX = maxY = -1; // 无效
-    }
+// 清空画布
+void ClearCanvas() {
+	g_shapes.clear();
+	g_currentPoints.clear();
+	g_isDrawing = false;
+	g_currentMode = DrawMode::None;
+	InvalidateRect(g_hwnd, NULL, TRUE);
 }
 
-// 栅栏填充核心：不用种子点，用“栅栏线”（扫描线+边界）填满一个图形
-static void FenceFillShape(const Shape& shape) {
-    std::vector<uint32_t> snapshot;
-    int W = 0, H = 0;
-    SnapshotShapeScene(shape, snapshot, W, H);
-    if (W <= 0 || H <= 0 || snapshot.empty()) return;
+// 完成当前图形绘制
+void FinishDrawing() {
+	if (g_currentPoints.empty()) {
+		g_isDrawing = false;
+		return;
+	}
 
-    int minX, minY, maxX, maxY;
-    GetShapeBoundingBox(shape, minX, minY, maxX, maxY);
-    if (minX > maxX || minY > maxY) return;
+	Shape newShape;
+	newShape.type = g_currentMode;
+	newShape.vertices = g_currentPoints;
+	newShape.color = g_drawColor;
+	newShape.filled = false;
 
-    // 限制在窗口范围内
-    minX = std::max(minX, 0); maxX = std::min(maxX, W - 1);
-    minY = std::max(minY, 0); maxY = std::min(maxY, H - 1);
-    if (minX > maxX || minY > maxY) return;
+	if (g_currentMode == DrawMode::DrawPolygon && g_currentPoints.size() < 3) {
+		// 多边形至少需要3个顶点
+	}
+	else if (g_currentMode == DrawMode::DrawBSpline && g_currentPoints.size() < 4) {
+		// B样条至少需要4个控制点
+	}
+	else {
+		g_shapes.push_back(newShape);
+	}
 
-    COLORREF fenceColor = RGB(0, 0, 0);
-    COLORREF fillColor = RGB(255, 200, 200);
-
-    std::vector<Span> spans;
-
-    for (int y = minY; y <= maxY; ++y) {
-        bool inside = false;
-        int fillStart = -1;
-
-        int x = minX;
-        while (x <= maxX) {
-            uint32_t pix = snapshot[static_cast<size_t>(y) * W + x];
-            bool isFence = ColorEqualRGB(pix, fenceColor);
-
-            if (isFence) {
-                // 跳过连续的栅栏像素，避免多次翻转
-                int runStart = x;
-                while (x <= maxX) {
-                    uint32_t pix2 = snapshot[static_cast<size_t>(y) * W + x];
-                    if (!ColorEqualRGB(pix2, fenceColor)) break;
-                    x++;
-                }
-                int runEnd = x - 1;
-
-                if (!inside) {
-                    // 外 -> 内 ：填充区从栅栏之后开始
-                    inside = true;
-                    fillStart = runEnd + 1;
-                }
-                else {
-                    // 内 -> 外 ：一个填充区结束
-                    int fillEnd = runStart - 1;
-                    if (fillStart <= fillEnd) {
-                        spans.push_back({ y, fillStart, fillEnd });
-                    }
-                    inside = false;
-                    fillStart = -1;
-                }
-            }
-            else {
-                x++;
-            }
-        }
-        // 如果这一行以“内”状态结束，可以选择丢弃（说明边界不闭合）或忽略
-    }
-
-    if (!spans.empty()) {
-        g_fenceFills.push_back({ spans, fillColor });
-        InvalidateRect(g_hwnd, nullptr, FALSE);
-    }
+	g_currentPoints.clear();
+	// 多边形和B样条模式下，可以继续添加点，除非用户切换模式
+	if (g_currentMode != DrawMode::DrawPolygon && g_currentMode != DrawMode::DrawBSpline) {
+		g_isDrawing = false;
+	}
+	InvalidateRect(g_hwnd, NULL, FALSE);
 }
 
-// 对最后一个可栅栏填充的图形执行栅栏填充
-static void FenceFillLastShape() {
-    if (shapes.empty()) return;
-    for (int i = static_cast<int>(shapes.size()) - 1; i >= 0; --i) {
-        if (shapes[i].type == RECTANGLE ||
-            shapes[i].type == POLYGON ||
-            shapes[i].type == CIRCLE_MIDPOINT ||
-            shapes[i].type == CIRCLE_BRESENHAM) {
-            FenceFillShape(shapes[i]);
-            return;
-        }
-    }
-    MessageBox(g_hwnd, TEXT("没有可以进行栅栏填充的图形（支持：矩形、多边形、圆）。"),
-        TEXT("栅栏填充"), MB_OK | MB_ICONINFORMATION);
-}
+// 重绘所有已保存的图形
+void RedrawAllShapes(HDC hdc) {
+	for (const auto& shape : g_shapes) {
+		// 如果图形已填充，先执行填充
+		if (shape.filled) {
+			if (shape.type == DrawMode::DrawPolygon) {
+				ScanlineFill(hdc, shape.vertices, shape.fillColor);
+			}
+			// (可以为其他可填充图形添加逻辑)
+		}
 
-// ================== 绘制所有图形 ==================
-static void DrawAllShapesToDC(HDC memDC, const RECT& rc, bool includeFenceFills, bool includeTempPreview) {
-    HBRUSH hBrush = CreateSolidBrush(RGB(255, 255, 255));
-    FillRect(memDC, &rc, hBrush); DeleteObject(hBrush);
-
-    // 先填充图形，后画边界
-    for (const auto& shape : shapes) {
-        if (shape.isFilled) {
-            if (shape.type == POLYGON && shape.points.size() >= 3) {
-                FillPolygonScanlineEx(memDC, shape.points, shape.fillColor);
-            }
-            else if (shape.type == RECTANGLE && shape.points.size() == 2) {
-                std::vector<Point> rect_pts = {
-                    shape.points[0], Point(shape.points[1].x, shape.points[0].y),
-                    shape.points[1], Point(shape.points[0].x, shape.points[1].y)
-                };
-                FillPolygonScanlineEx(memDC, rect_pts, shape.fillColor);
-            }
-            else if ((shape.type == CIRCLE_MIDPOINT || shape.type == CIRCLE_BRESENHAM) &&
-                shape.points.size() == 2) {
-                int r = static_cast<int>(std::sqrt(
-                    std::pow(shape.points[1].x - shape.points[0].x, 2.0) +
-                    std::pow(shape.points[1].y - shape.points[0].y, 2.0)));
-                FillCircleScanline(memDC, shape.points[0], r, shape.fillColor);
-            }
-        }
-    }
-
-    // 画边界
-    for (const auto& shape : shapes) {
-        switch (shape.type) {
-        case LINE_MIDPOINT:
-            if (shape.points.size() == 2)
-                DrawLineMidpoint(memDC, shape.points[0].x, shape.points[0].y,
-                    shape.points[1].x, shape.points[1].y, shape.color);
-            break;
-        case LINE_BRESENHAM:
-            if (shape.points.size() == 2)
-                DrawLineBresenham(memDC, shape.points[0].x, shape.points[0].y,
-                    shape.points[1].x, shape.points[1].y, shape.color);
-            break;
-        case CIRCLE_MIDPOINT:
-            if (shape.points.size() == 2) {
-                int r = static_cast<int>(std::sqrt(
-                    std::pow(shape.points[1].x - shape.points[0].x, 2.0) +
-                    std::pow(shape.points[1].y - shape.points[0].y, 2.0)));
-                DrawCircleMidpoint(memDC, shape.points[0].x,
-                    shape.points[0].y, r, shape.color);
-            }
-            break;
-        case CIRCLE_BRESENHAM:
-            if (shape.points.size() == 2) {
-                int r = static_cast<int>(std::sqrt(
-                    std::pow(shape.points[1].x - shape.points[0].x, 2.0) +
-                    std::pow(shape.points[1].y - shape.points[0].y, 2.0)));
-                DrawCircleBresenham(memDC, shape.points[0].x,
-                    shape.points[0].y, r, shape.color);
-            }
-            break;
-        case RECTANGLE:
-            if (shape.points.size() == 2) {
-                HPEN hPen = CreatePen(PS_SOLID, 1, shape.color);
-                HGDIOBJ oldPen = SelectObject(memDC, hPen);
-                HGDIOBJ oldBrush = SelectObject(memDC, GetStockObject(NULL_BRUSH));
-                Rectangle(memDC, shape.points[0].x, shape.points[0].y,
-                    shape.points[1].x, shape.points[1].y);
-                SelectObject(memDC, oldBrush); SelectObject(memDC, oldPen); DeleteObject(hPen);
-            }
-            break;
-        case POLYGON:
-            if (shape.points.size() >= 2) {
-                for (size_t i = 0; i < shape.points.size(); ++i) {
-                    const Point& a = shape.points[i];
-                    const Point& b = shape.points[(i + 1) % shape.points.size()];
-                    DrawLineBresenham(memDC, a.x, a.y, b.x, b.y, shape.color);
-                }
-            }
-            break;
-        case BSPLINE:
-        {
-            HPEN hPen = CreatePen(PS_SOLID, 1, shape.color);
-            HGDIOBJ oldPen = SelectObject(memDC, hPen);
-            DrawBSpline(memDC, shape.points, shape.color);
-            SelectObject(memDC, oldPen);
-            DeleteObject(hPen);
-        }
-        break;
-        default: break;
-        }
-    }
-
-    // 栅栏填充结果
-    if (includeFenceFills) {
-        for (const auto& reg : g_fenceFills)
-            DrawFenceSpans(memDC, reg.spans, reg.color);
-    }
-
-    // 临时预览
-    if (includeTempPreview && isDrawing && !tempPoints.empty()) {
-        COLORREF tempColor = RGB(255, 0, 0);
-        HPEN hTempPen = CreatePen(PS_DOT, 1, tempColor);
-        HGDIOBJ oldPen = SelectObject(memDC, hTempPen);
-        HGDIOBJ oldBrush = SelectObject(memDC, GetStockObject(NULL_BRUSH));
-
-        if ((currentMode == LINE_MIDPOINT || currentMode == LINE_BRESENHAM) && tempPoints.size() == 2) {
-            if (currentMode == LINE_MIDPOINT)
-                DrawLineMidpoint(memDC, tempPoints[0].x, tempPoints[0].y,
-                    tempPoints[1].x, tempPoints[1].y, tempColor);
-            else
-                DrawLineBresenham(memDC, tempPoints[0].x, tempPoints[0].y,
-                    tempPoints[1].x, tempPoints[1].y, tempColor);
-        }
-        else if ((currentMode == CIRCLE_MIDPOINT || currentMode == CIRCLE_BRESENHAM) && tempPoints.size() == 2) {
-            int r = static_cast<int>(std::sqrt(
-                std::pow(tempPoints[1].x - tempPoints[0].x, 2.0) +
-                std::pow(tempPoints[1].y - tempPoints[0].y, 2.0)));
-            if (currentMode == CIRCLE_MIDPOINT)
-                DrawCircleMidpoint(memDC, tempPoints[0].x, tempPoints[0].y, r, tempColor);
-            else
-                DrawCircleBresenham(memDC, tempPoints[0].x, tempPoints[0].y, r, tempColor);
-        }
-        else if (currentMode == RECTANGLE && tempPoints.size() == 2) {
-            Rectangle(memDC, tempPoints[0].x, tempPoints[0].y,
-                tempPoints[1].x, tempPoints[1].y);
-        }
-        else if (currentMode == POLYGON) {
-            for (size_t i = 0; i + 1 < tempPoints.size(); ++i)
-                DrawLineBresenham(memDC, tempPoints[i].x, tempPoints[i].y,
-                    tempPoints[i + 1].x, tempPoints[i + 1].y, RGB(128, 128, 128));
-            if (g_hasHover && !tempPoints.empty()) {
-                DrawLineBresenham(memDC, tempPoints.back().x, tempPoints.back().y,
-                    g_hoverPoint.x, g_hoverPoint.y, tempColor);
-            }
-        }
-        else if (currentMode == BSPLINE) {
-            if (tempPoints.size() >= 1) {
-                std::vector<Point> preview = tempPoints;
-                if (g_hasHover) preview.push_back(g_hoverPoint);
-                for (size_t i = 0; i + 1 < preview.size(); ++i)
-                    DrawLineBresenham(memDC, preview[i].x, preview[i].y,
-                        preview[i + 1].x, preview[i + 1].y, RGB(160, 160, 160));
-                DrawBSpline(memDC, preview, tempColor);
-            }
-        }
-
-        SelectObject(memDC, oldBrush);
-        SelectObject(memDC, oldPen);
-        DeleteObject(hTempPen);
-    }
-}
-
-// ================== 实验二渲染 ==================
-void RenderExperiment2(HWND hwnd) {
-    PAINTSTRUCT ps; HDC hdc = BeginPaint(hwnd, &ps);
-    RECT rc; GetClientRect(hwnd, &rc);
-
-    HDC memDC = CreateCompatibleDC(hdc);
-    HBITMAP memBitmap = CreateCompatibleBitmap(hdc,
-        rc.right - rc.left,
-        rc.bottom - rc.top);
-    HGDIOBJ oldBmp = SelectObject(memDC, memBitmap);
-
-    DrawAllShapesToDC(memDC, rc, /*includeFenceFills=*/true, /*includeTempPreview=*/true);
-
-    BitBlt(hdc, 0, 0, rc.right, rc.bottom, memDC, 0, 0, SRCCOPY);
-
-    SelectObject(memDC, oldBmp); DeleteObject(memBitmap); DeleteDC(memDC);
-    EndPaint(hwnd, &ps);
-}
-
-// ================== 主窗口过程 ==================
-LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
-    switch (msg) {
-    case WM_CREATE:
-    {
-        g_hwnd = hwnd;
-        HMENU hMenuBar = CreateMenu();
-        HMENU hExpMenu = CreatePopupMenu();
-        AppendMenu(hExpMenu, MF_STRING, ID_EXP_1, TEXT("实验一"));
-        AppendMenu(hExpMenu, MF_STRING, ID_EXP_2, TEXT("实验二"));
-        AppendMenu(hMenuBar, MF_POPUP, (UINT_PTR)hExpMenu, TEXT("实验切换"));
-
-        HMENU hDrawMenu = CreatePopupMenu();
-        AppendMenu(hDrawMenu, MF_STRING, ID_DRAW_LINE_MIDPOINT, TEXT("直线 (中点法)"));
-        AppendMenu(hDrawMenu, MF_STRING, ID_DRAW_LINE_BRESENHAM, TEXT("直线 (Bresenham)"));
-        AppendMenu(hDrawMenu, MF_SEPARATOR, 0, nullptr);
-        AppendMenu(hDrawMenu, MF_STRING, ID_DRAW_CIRCLE_MIDPOINT, TEXT("圆 (中点法)"));
-        AppendMenu(hDrawMenu, MF_STRING, ID_DRAW_CIRCLE_BRESENHAM, TEXT("圆 (Bresenham)"));
-        AppendMenu(hDrawMenu, MF_SEPARATOR, 0, nullptr);
-        AppendMenu(hDrawMenu, MF_STRING, ID_DRAW_RECTANGLE, TEXT("矩形"));
-        AppendMenu(hDrawMenu, MF_SEPARATOR, 0, nullptr);
-        AppendMenu(hDrawMenu, MF_STRING, ID_DRAW_POLYGON, TEXT("多边形 (左键添加点)"));
-        AppendMenu(hDrawMenu, MF_STRING, ID_DRAW_BSPLINE, TEXT("B样条曲线 (左键添加点)"));
-        AppendMenu(hMenuBar, MF_POPUP, (UINT_PTR)hDrawMenu, TEXT("绘图"));
-
-        HMENU hFillMenu = CreatePopupMenu();
-        AppendMenu(hFillMenu, MF_STRING, ID_FILL_SCANLINE, TEXT("扫描线填充 (最后一个多边形/矩形)"));
-        AppendMenu(hFillMenu, MF_STRING, ID_FILL_FENCE_MODE, TEXT("栅栏填充 (最后一个图形)"));
-        AppendMenu(hMenuBar, MF_POPUP, (UINT_PTR)hFillMenu, TEXT("填充"));
-
-        HMENU hEditMenu = CreatePopupMenu();
-        AppendMenu(hEditMenu, MF_STRING, ID_EDIT_FINISH_POLYGON, TEXT("完成多边形"));
-        AppendMenu(hEditMenu, MF_STRING, ID_EDIT_FINISH_BSPLINE, TEXT("完成B样条曲线"));
-        AppendMenu(hEditMenu, MF_SEPARATOR, 0, nullptr);
-        AppendMenu(hEditMenu, MF_STRING, ID_EDIT_CLEAR, TEXT("清空画布"));
-        AppendMenu(hMenuBar, MF_POPUP, (UINT_PTR)hEditMenu, TEXT("编辑"));
-
-        SetMenu(hwnd, hMenuBar);
-        SwitchExperiment(1);
-        return 0;
-    }
-
-    case WM_COMMAND:
-    {
-        int id = LOWORD(wParam);
-        if (id >= ID_DRAW_LINE_MIDPOINT && id <= ID_DRAW_BSPLINE) {
-            isDrawing = false; tempPoints.clear(); g_hasHover = false;
-        }
-
-        switch (id) {
-        case ID_EXP_1: SwitchExperiment(1); break;
-        case ID_EXP_2: SwitchExperiment(2); break;
-
-        case ID_DRAW_LINE_MIDPOINT:  currentMode = LINE_MIDPOINT;  break;
-        case ID_DRAW_LINE_BRESENHAM: currentMode = LINE_BRESENHAM; break;
-        case ID_DRAW_CIRCLE_MIDPOINT: currentMode = CIRCLE_MIDPOINT; break;
-        case ID_DRAW_CIRCLE_BRESENHAM: currentMode = CIRCLE_BRESENHAM; break;
-        case ID_DRAW_RECTANGLE: currentMode = RECTANGLE; break;
-        case ID_DRAW_POLYGON:  currentMode = POLYGON;  break;
-        case ID_DRAW_BSPLINE:  currentMode = BSPLINE;  break;
-
-        case ID_FILL_FENCE_MODE:
-            if (currentExperiment == 2) {
-                FenceFillLastShape();
-            }
-            break;
-
-        case ID_FILL_SCANLINE:
-            if (currentExperiment == 2) {
-                for (int i = static_cast<int>(shapes.size()) - 1; i >= 0; --i) {
-                    if (shapes[i].type == POLYGON || shapes[i].type == RECTANGLE) {
-                        shapes[i].isFilled = true; shapes[i].fillColor = RGB(200, 200, 255);
-                        InvalidateRect(hwnd, nullptr, FALSE);
-                        break;
-                    }
-                }
-            }
-            break;
-
-        case ID_EDIT_CLEAR:
-            if (currentExperiment == 2) ClearCanvas();
-            break;
-
-        case ID_EDIT_FINISH_POLYGON:
-            if (currentExperiment == 2 && currentMode == POLYGON && tempPoints.size() >= 3) {
-                shapes.push_back({ POLYGON, tempPoints, RGB(0, 0, 0) });
-                tempPoints.clear(); isDrawing = false; g_hasHover = false;
-                InvalidateRect(hwnd, nullptr, FALSE);
-            }
-            break;
-        case ID_EDIT_FINISH_BSPLINE:
-            if (currentExperiment == 2 && currentMode == BSPLINE && tempPoints.size() >= 4) {
-                shapes.push_back({ BSPLINE, tempPoints, RGB(0, 0, 200) });
-                tempPoints.clear(); isDrawing = false; g_hasHover = false;
-                InvalidateRect(hwnd, nullptr, FALSE);
-            }
-            break;
-        }
-        return 0;
-    }
-
-    case WM_LBUTTONDOWN:
-        if (currentExperiment == 2) {
-            Point p(LOWORD(lParam), HIWORD(lParam));
-            if (currentMode == POLYGON || currentMode == BSPLINE) {
-                tempPoints.push_back(p); isDrawing = true;
-                g_hasHover = false;
-                InvalidateRect(hwnd, nullptr, FALSE);
-            }
-            else if (currentMode != NONE) {
-                isDrawing = true; tempPoints = { p, p }; SetCapture(hwnd);
-            }
-        }
-        return 0;
-
-    case WM_MOUSEMOVE:
-        if (currentExperiment == 2) {
-            int mx = LOWORD(lParam), my = HIWORD(lParam);
-            if (isDrawing && (currentMode == LINE_MIDPOINT || currentMode == LINE_BRESENHAM
-                || currentMode == CIRCLE_MIDPOINT || currentMode == CIRCLE_BRESENHAM || currentMode == RECTANGLE)) {
-                if (!tempPoints.empty()) { tempPoints.back() = Point(mx, my); InvalidateRect(hwnd, nullptr, FALSE); }
-            }
-            else if ((currentMode == POLYGON || currentMode == BSPLINE) && !tempPoints.empty()) {
-                g_hasHover = true;
-                g_hoverPoint = Point(mx, my);
-                InvalidateRect(hwnd, nullptr, FALSE);
-            }
-        }
-        return 0;
-
-    case WM_LBUTTONUP:
-        if (currentExperiment == 2 && isDrawing) {
-            ReleaseCapture();
-            if (currentMode == LINE_MIDPOINT || currentMode == LINE_BRESENHAM
-                || currentMode == CIRCLE_MIDPOINT || currentMode == CIRCLE_BRESENHAM || currentMode == RECTANGLE) {
-                if (tempPoints.size() == 2) shapes.push_back({ currentMode, tempPoints, RGB(0, 0, 0) });
-                isDrawing = false; tempPoints.clear(); g_hasHover = false;
-                InvalidateRect(hwnd, nullptr, FALSE);
-            }
-        }
-        return 0;
-
-    case WM_PAINT:
-        if (currentExperiment == 1) RenderExperiment1(hwnd); else RenderExperiment2(hwnd);
-        return 0;
-
-    case WM_SIZE:
-        if (currentExperiment == 1 && pRenderTarget)
-            pRenderTarget->Resize(D2D1::SizeU(LOWORD(lParam), HIWORD(lParam)));
-        else InvalidateRect(hwnd, nullptr, TRUE);
-        return 0;
-
-    case WM_DESTROY:
-        DiscardD2DResources();
-        PostQuitMessage(0);
-        return 0;
-    }
-    return DefWindowProc(hwnd, msg, wParam, lParam);
-}
-
-// ================== WinMain ==================
-int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
-    const TCHAR CLASS_NAME[] = TEXT("AdvancedGraphicsApp");
-    WNDCLASS wc = {};
-    wc.lpfnWndProc = WndProc; wc.hInstance = hInstance; wc.lpszClassName = CLASS_NAME;
-    wc.hCursor = LoadCursor(nullptr, IDC_ARROW); wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
-    RegisterClass(&wc);
-
-    HWND hwnd = CreateWindowEx(0, CLASS_NAME, TEXT("2023112569-高年平"), WS_OVERLAPPEDWINDOW,
-        CW_USEDEFAULT, CW_USEDEFAULT, 1000, 700, nullptr, nullptr, hInstance, nullptr);
-
-    if (hwnd == nullptr) return 0;
-    ShowWindow(hwnd, nCmdShow); UpdateWindow(hwnd);
-
-    MSG msg = {};
-    while (GetMessage(&msg, nullptr, 0, 0)) { TranslateMessage(&msg); DispatchMessage(&msg); }
-    return 0;
+		// 绘制图形边框
+		switch (shape.type) {
+		case DrawMode::DrawLineMidpoint:
+			DrawLineMidpoint(hdc, shape.vertices[0].x, shape.vertices[0].y, shape.vertices[1].x, shape.vertices[1].y, shape.color);
+			break;
+		case DrawMode::DrawLineBresenham:
+			DrawLineBresenham(hdc, shape.vertices[0].x, shape.vertices[0].y, shape.vertices[1].x, shape.vertices[1].y, shape.color);
+			break;
+		case DrawMode::DrawCircleMidpoint:
+		{
+			int r = (int)sqrt(pow(shape.vertices[1].x - shape.vertices[0].x, 2) + pow(shape.vertices[1].y - shape.vertices[0].y, 2));
+			DrawCircleMidpoint(hdc, shape.vertices[0].x, shape.vertices[0].y, r, shape.color);
+		}
+		break;
+		case DrawMode::DrawCircleBresenham:
+		{
+			int r = (int)sqrt(pow(shape.vertices[1].x - shape.vertices[0].x, 2) + pow(shape.vertices[1].y - shape.vertices[0].y, 2));
+			DrawCircleBresenham(hdc, shape.vertices[0].x, shape.vertices[0].y, r, shape.color);
+		}
+		break;
+		case DrawMode::DrawRectangle:
+			Rectangle(hdc, shape.vertices[0].x, shape.vertices[0].y, shape.vertices[1].x, shape.vertices[1].y);
+			break;
+		case DrawMode::DrawPolygon:
+			DrawPolygon(hdc, shape.vertices, shape.color);
+			break;
+		case DrawMode::DrawBSpline:
+			DrawBSpline(hdc, shape.vertices, shape.color);
+			break;
+		}
+	}
 }
