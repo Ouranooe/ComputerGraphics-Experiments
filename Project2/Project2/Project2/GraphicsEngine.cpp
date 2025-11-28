@@ -1,82 +1,18 @@
-﻿#include <windows.h>
+#include "GraphicsEngine.h"
+
 #include <windowsx.h>
-#include <vector>
 #include <algorithm>
 #include <cmath>
+#include <utility>
 
 #pragma comment(lib, "gdi32.lib")
 #pragma comment(lib, "user32.lib")
 
-//----------------------------------------
-#define WINDOW_WIDTH  800
-#define WINDOW_HEIGHT 600
+namespace GraphicsEngine {
+namespace {
 
-#define ID_DRAW_LINE_MIDPOINT    1001
-#define ID_DRAW_LINE_BRESENHAM   1002
-#define ID_DRAW_CIRCLE_MIDPOINT  1003
-#define ID_DRAW_CIRCLE_BRESENHAM 1004
-#define ID_DRAW_RECTANGLE        1005
-#define ID_DRAW_POLYGON          1006
-#define ID_DRAW_BSPLINE          1007
-#define ID_FILL_SCANLINE         1008
-#define ID_FILL_FENCE            1009
-#define ID_EDIT_FINISH           1010
-#define ID_EDIT_CLEAR            1011
-
-#define ID_TRANS_TRANSLATE       1012
-#define ID_TRANS_SCALE           1013
-#define ID_TRANS_ROTATE          1014
-#define ID_CLIP_LINE_CS          1015
-#define ID_CLIP_LINE_MID         1016
-#define ID_CLIP_POLY_SH          1017
-#define ID_CLIP_POLY_WA          1018
-
-//----------------------------------------
-enum class DrawMode {
-    None,
-    DrawLineMidpoint,
-    DrawLineBresenham,
-    DrawCircleMidpoint,
-    DrawCircleBresenham,
-    DrawRectangle,
-    DrawPolygon,
-    DrawBSpline,
-    FillScanline,
-    FillFence,
-    TransformTranslate,
-    TransformScale,
-    TransformRotate,
-    ClipLineCS,
-    ClipLineMid,
-    ClipPolySH,
-    ClipPolyWA
-};
-
-struct Point {
-    int x, y;
-};
-
-struct Shape {
-    DrawMode type;
-    std::vector<Point> vertices;
-    COLORREF color;
-    COLORREF fillColor;
-    int fillMode;  // 0:无  1:扫描线  2:栅栏
-};
-
-// B样条基函数
-void BSplineBase(float t, float* b) {
-    float t2 = t * t;
-    float t3 = t2 * t;
-    b[0] = (-t3 + 3 * t2 - 3 * t + 1) / 6.0f;
-    b[1] = (3 * t3 - 6 * t2 + 4) / 6.0f;
-    b[2] = (-3 * t3 + 3 * t2 + 3 * t + 1) / 6.0f;
-    b[3] = t3 / 6.0f;
-}
-
-//----------------------------------------
-HWND   g_hwnd = nullptr;
-HDC    g_hdcMem = nullptr;
+HWND g_hwnd = nullptr;
+HDC g_hdcMem = nullptr;
 HBITMAP g_hbmMem = nullptr;
 
 DrawMode g_currentMode = DrawMode::None;
@@ -87,202 +23,42 @@ bool g_isDrawing = false;
 COLORREF g_drawColor = RGB(0, 0, 0);
 COLORREF g_fillColor = RGB(253, 151, 47);
 
-// 变换状态
-int   g_selectedShapeIndex = -1;
-Point g_firstClick;
-double g_scaleBaseDist = 1;
-double g_rotBaseAngle = 0;
+int g_selectedShapeIndex = -1;
+Point g_firstClick{ 0, 0 };
+double g_scaleBaseDist = 1.0;
+double g_rotBaseAngle = 0.0;
 
-//----------------------------------------
-LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
-
-void DrawPixel(HDC, int, int, COLORREF);
-void DrawPixelXor(HDC, int, int, COLORREF);
-void DrawLineMidpoint(HDC, int, int, int, int, COLORREF);
-void DrawLineBresenham(HDC, int, int, int, int, COLORREF);
-void DrawCircleMidpoint(HDC, int, int, int, COLORREF);
-void DrawCircleBresenham(HDC, int, int, int, COLORREF);
-void DrawPolyline(HDC, const std::vector<Point>&, COLORREF, bool);
-void DrawBSpline(HDC, const std::vector<Point>&, COLORREF);
-void DrawShapeBorder(HDC, const Shape&);
-
-bool PointInShape(const Shape&, int, int);
-int  HitTestShape(int, int);
-
-void FillPolygonScanline(HDC, const std::vector<Point>&, COLORREF, bool);
-void FillRectScanline(HDC, const Point&, const Point&, COLORREF, bool);
-void FillCircleScanline(HDC, const Point&, const Point&, COLORREF, bool);
-void FillShapeScanline(HDC, const Shape&, COLORREF);
-void FenceFillRect(HDC, const Point&, const Point&, COLORREF);
-void FenceFillCircle(HDC, const Point&, const Point&, COLORREF);
-void FenceFillPolygon(HDC, const std::vector<Point>&, COLORREF);
-void FillShapeFence(HDC, const Shape&, COLORREF);
-
-void TranslateShape(Shape&, int, int);
-void ScaleShape(Shape&, const Point&, double, double);
-void RotateShape(Shape&, const Point&, double);
-
-void ClipAllLines_CohenSutherland(const RECT&);
-void ClipAllLines_Midpoint(const RECT&);
-std::vector<Point> ClipPolygon_SutherlandHodgman(const std::vector<Point>&, const RECT&);
-std::vector<Point> ClipPolygon_WeilerAtherton_Rect(const std::vector<Point>&, const RECT&);
-void ClipAllPolygons_SH(const RECT&);
-void ClipAllPolygons_WA(const RECT&);
-
-void CreateMenuSystem(HWND);
-void OnPaint(HWND);
-void OnLButtonDown(int, int);
-void OnMouseMove(int, int);
-void ClearCanvas();
-void FinishDrawing();
-void RedrawAllShapes(HDC);
-void RedrawAllShapesOn(HDC, const std::vector<Shape>&);
-
-//----------------------------------------
-int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int nCmdShow) {
-    WNDCLASS wc = {};
-    wc.lpfnWndProc = WndProc;
-    wc.hInstance = hInst;
-    wc.lpszClassName = L"ComputerGraphicsLab";
-    wc.hbrBackground = (HBRUSH)GetStockObject(WHITE_BRUSH);
-    wc.hCursor = LoadCursor(NULL, IDC_ARROW);
-
-    RegisterClass(&wc);
-
-    g_hwnd = CreateWindowEx(
-        0, L"ComputerGraphicsLab", L"2023115323侯懿",
-        WS_OVERLAPPEDWINDOW,
-        CW_USEDEFAULT, CW_USEDEFAULT, WINDOW_WIDTH, WINDOW_HEIGHT,
-        NULL, NULL, hInst, NULL
-    );
-    if (!g_hwnd) return 0;
-
-    CreateMenuSystem(g_hwnd);
-    ShowWindow(g_hwnd, nCmdShow);
-    UpdateWindow(g_hwnd);
-
-    MSG msg{};
-    while (GetMessage(&msg, NULL, 0, 0)) {
-        TranslateMessage(&msg);
-        DispatchMessage(&msg);
+void RecreateBackBuffer(HWND hwnd) {
+    if (!hwnd) {
+        return;
     }
-    return 0;
-}
-
-//----------------------------------------
-LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
-    switch (msg) {
-    case WM_CREATE: {
-        HDC hdc = GetDC(hwnd);
+    HDC hdc = GetDC(hwnd);
+    if (!g_hdcMem) {
         g_hdcMem = CreateCompatibleDC(hdc);
-        RECT rc; GetClientRect(hwnd, &rc);
-        g_hbmMem = CreateCompatibleBitmap(hdc, rc.right - rc.left, rc.bottom - rc.top);
-        SelectObject(g_hdcMem, g_hbmMem);
-        ReleaseDC(hwnd, hdc);
-    } break;
-
-    case WM_COMMAND: {
-        int id = LOWORD(wParam);
-        switch (id) {
-        case ID_DRAW_LINE_MIDPOINT:
-            g_currentMode = DrawMode::DrawLineMidpoint;   g_currentPoints.clear(); g_isDrawing = false; break;
-        case ID_DRAW_LINE_BRESENHAM:
-            g_currentMode = DrawMode::DrawLineBresenham;  g_currentPoints.clear(); g_isDrawing = false; break;
-        case ID_DRAW_CIRCLE_MIDPOINT:
-            g_currentMode = DrawMode::DrawCircleMidpoint; g_currentPoints.clear(); g_isDrawing = false; break;
-        case ID_DRAW_CIRCLE_BRESENHAM:
-            g_currentMode = DrawMode::DrawCircleBresenham;g_currentPoints.clear(); g_isDrawing = false; break;
-        case ID_DRAW_RECTANGLE:
-            g_currentMode = DrawMode::DrawRectangle;      g_currentPoints.clear(); g_isDrawing = false; break;
-        case ID_DRAW_POLYGON:
-            g_currentMode = DrawMode::DrawPolygon;        g_currentPoints.clear(); g_isDrawing = true;  break;
-        case ID_DRAW_BSPLINE:
-            g_currentMode = DrawMode::DrawBSpline;        g_currentPoints.clear(); g_isDrawing = true;  break;
-        case ID_FILL_SCANLINE:
-            g_currentMode = DrawMode::FillScanline;       break;
-        case ID_FILL_FENCE:
-            g_currentMode = DrawMode::FillFence;          break;
-
-        case ID_TRANS_TRANSLATE:
-            g_currentMode = DrawMode::TransformTranslate; g_isDrawing = false; g_selectedShapeIndex = -1; break;
-        case ID_TRANS_SCALE:
-            g_currentMode = DrawMode::TransformScale;     g_isDrawing = false; g_selectedShapeIndex = -1; break;
-        case ID_TRANS_ROTATE:
-            g_currentMode = DrawMode::TransformRotate;    g_isDrawing = false; g_selectedShapeIndex = -1; break;
-
-        case ID_CLIP_LINE_CS:
-            g_currentMode = DrawMode::ClipLineCS;         g_isDrawing = false; break;
-        case ID_CLIP_LINE_MID:
-            g_currentMode = DrawMode::ClipLineMid;        g_isDrawing = false; break;
-        case ID_CLIP_POLY_SH:
-            g_currentMode = DrawMode::ClipPolySH;         g_isDrawing = false; break;
-        case ID_CLIP_POLY_WA:
-            g_currentMode = DrawMode::ClipPolyWA;         g_isDrawing = false; break;
-
-        case ID_EDIT_FINISH:
-            FinishDrawing();                              break;
-        case ID_EDIT_CLEAR:
-            ClearCanvas();                                break;
-        default:
-            return DefWindowProc(hwnd, msg, wParam, lParam);
-        }
-    } break;
-
-    case WM_LBUTTONDOWN: {
-        int x = LOWORD(lParam), y = HIWORD(lParam);
-        OnLButtonDown(x, y);
-    } break;
-
-    case WM_MOUSEMOVE: {
-        int x = LOWORD(lParam), y = HIWORD(lParam);
-        OnMouseMove(x, y);
-    } break;
-
-                     // 鼠标滚轮缩放（在缩放模式 + 已选择图形时有效）
-    case WM_MOUSEWHEEL: {
-        int zDelta = GET_WHEEL_DELTA_WPARAM(wParam); // 120 一格
-        if (g_currentMode == DrawMode::TransformScale &&
-            g_selectedShapeIndex >= 0 &&
-            g_selectedShapeIndex < (int)g_shapes.size()) {
-            double step = 0.1;
-            double s = 1.0 + step * (zDelta / 120.0);
-            if (s < 0.1) s = 0.1;
-            ScaleShape(g_shapes[g_selectedShapeIndex], g_firstClick, s, s);
-            InvalidateRect(g_hwnd, NULL, FALSE);
-        }
-    } break;
-
-    case WM_SIZE: {
-        if (g_hdcMem) {
-            DeleteObject(g_hbmMem);
-            HDC hdc = GetDC(hwnd);
-            RECT rc; GetClientRect(hwnd, &rc);
-            g_hbmMem = CreateCompatibleBitmap(hdc, rc.right - rc.left, rc.bottom - rc.top);
-            SelectObject(g_hdcMem, g_hbmMem);
-            ReleaseDC(hwnd, hdc);
-            InvalidateRect(hwnd, NULL, FALSE);
-        }
-    } break;
-
-    case WM_PAINT:
-        OnPaint(hwnd); break;
-
-    case WM_ERASEBKGND:
-        return 1;
-
-    case WM_DESTROY:
-        DeleteObject(g_hbmMem);
-        DeleteDC(g_hdcMem);
-        PostQuitMessage(0);
-        break;
-
-    default:
-        return DefWindowProc(hwnd, msg, wParam, lParam);
     }
-    return 0;
+    RECT rc{};
+    GetClientRect(hwnd, &rc);
+    HBITMAP newBitmap = CreateCompatibleBitmap(hdc, rc.right - rc.left, rc.bottom - rc.top);
+    HBITMAP oldBitmap = static_cast<HBITMAP>(SelectObject(g_hdcMem, newBitmap));
+    if (oldBitmap && oldBitmap != g_hbmMem) {
+        DeleteObject(oldBitmap);
+    }
+    if (g_hbmMem && g_hbmMem != newBitmap) {
+        DeleteObject(g_hbmMem);
+    }
+    g_hbmMem = newBitmap;
+    ReleaseDC(hwnd, hdc);
 }
 
-//----------------------------------------
+void BSplineBase(float t, float* b) {
+    float t2 = t * t;
+    float t3 = t2 * t;
+    b[0] = (-t3 + 3 * t2 - 3 * t + 1) / 6.0f;
+    b[1] = (3 * t3 - 6 * t2 + 4) / 6.0f;
+    b[2] = (-3 * t3 + 3 * t2 + 3 * t + 1) / 6.0f;
+    b[3] = t3 / 6.0f;
+}
+
 void DrawPixel(HDC hdc, int x, int y, COLORREF c) {
     SetPixel(hdc, x, y, c);
 }
@@ -457,8 +233,7 @@ void DrawShapeBorder(HDC hdc, const Shape& s) {
     }
 }
 
-//----------------------------------------
-static double Dist2PointSeg(double x, double y, double x1, double y1, double x2, double y2) {
+double Dist2PointSeg(double x, double y, double x1, double y1, double x2, double y2) {
     double vx = x2 - x1, vy = y2 - y1;
     double wx = x - x1, wy = y - y1;
     double c1 = vx * wx + vy * wy;
@@ -519,7 +294,6 @@ int HitTestShape(int x, int y) {
     return -1;
 }
 
-//----------------------------------------
 void FillPolygonScanline(HDC hdc, const std::vector<Point>& v, COLORREF c, bool innerOnly) {
     if (v.size() < 3) return;
     int ymin = v[0].y, ymax = v[0].y;
@@ -595,9 +369,6 @@ void FillShapeScanline(HDC hdc, const Shape& s, COLORREF c) {
     }
 }
 
-//----------------------------------------
-// 栅栏填充
-//----------------------------------------
 void FenceFillRect(HDC hdc, const Point& p1, const Point& p2, COLORREF xorColor) {
     int x1 = min(p1.x, p2.x);
     int x2 = max(p1.x, p2.x);
@@ -699,9 +470,6 @@ void FillShapeFence(HDC hdc, const Shape& s, COLORREF fillColor) {
     }
 }
 
-//----------------------------------------
-// 变换
-//----------------------------------------
 void TranslateShape(Shape& s, int dx, int dy) {
     for (auto& p : s.vertices) {
         p.x += dx;
@@ -719,6 +487,39 @@ void ScaleShape(Shape& s, const Point& center, double sx, double sy) {
 }
 
 void RotateShape(Shape& s, const Point& center, double angleRad) {
+    // ���Σ��ȱ��4������Ķ���Σ�����ת
+    if (s.type == DrawMode::DrawRectangle && s.vertices.size() >= 2) {
+        Point p0 = s.vertices[0];
+        Point p1 = s.vertices[1];
+
+        int x1 = min(p0.x, p1.x);
+        int x2 = max(p0.x, p1.x);
+        int y1 = min(p0.y, p1.y);
+        int y2 = max(p0.y, p1.y);
+
+        std::vector<Point> poly(4);
+        poly[0] = { x1, y1 };
+        poly[1] = { x2, y1 };
+        poly[2] = { x2, y2 };
+        poly[3] = { x1, y2 };
+
+        double c = std::cos(angleRad);
+        double s1 = std::sin(angleRad);
+        for (auto& p : poly) {
+            double dx = p.x - center.x;
+            double dy = p.y - center.y;
+            double nx = dx * c - dy * s1;
+            double ny = dx * s1 + dy * c;
+            p.x = (int)std::round(center.x + nx);
+            p.y = (int)std::round(center.y + ny);
+        }
+
+        s.type = DrawMode::DrawPolygon;   // ֮��������δ���
+        s.vertices = poly;
+        return;
+    }
+
+    // ����ͼ�Σ������������ת
     double c = std::cos(angleRad);
     double s1 = std::sin(angleRad);
     for (auto& p : s.vertices) {
@@ -731,14 +532,12 @@ void RotateShape(Shape& s, const Point& center, double angleRad) {
     }
 }
 
-//----------------------------------------
-// 线段裁剪 (Cohen-Sutherland + 中点分割)
-//----------------------------------------
-static const int CS_INSIDE = 0;
-static const int CS_LEFT = 1;
-static const int CS_RIGHT = 2;
-static const int CS_BOTTOM = 4;
-static const int CS_TOP = 8;
+
+const int CS_INSIDE = 0;
+const int CS_LEFT = 1;
+const int CS_RIGHT = 2;
+const int CS_BOTTOM = 4;
+const int CS_TOP = 8;
 
 int CS_GetOutCode(double x, double y, double xmin, double xmax, double ymin, double ymax) {
     int code = CS_INSIDE;
@@ -891,9 +690,6 @@ void ClipAllLines_Midpoint(const RECT& clip) {
     g_shapes.swap(newShapes);
 }
 
-//----------------------------------------
-// 多边形裁剪 SH + WA(简化)
-//----------------------------------------
 Point IntersectEdge(const Point& p1, const Point& p2, char edge, const RECT& r) {
     double x1 = p1.x, y1 = p1.y;
     double x2 = p2.x, y2 = p2.y;
@@ -951,7 +747,6 @@ std::vector<Point> ClipPolygon_SutherlandHodgman(const std::vector<Point>& poly,
 }
 
 std::vector<Point> ClipPolygon_WeilerAtherton_Rect(const std::vector<Point>& poly, const RECT& r) {
-    // 矩形窗口下简化为 SH
     return ClipPolygon_SutherlandHodgman(poly, r);
 }
 
@@ -979,78 +774,136 @@ void ClipAllPolygons_WA(const RECT& clip) {
     );
 }
 
-//----------------------------------------
-void CreateMenuSystem(HWND hwnd) {
-    HMENU hMenu = CreateMenu();
-    HMENU hDrawMenu = CreateMenu();
-    HMENU hFillMenu = CreateMenu();
-    HMENU hEditMenu = CreateMenu();
-    HMENU hTransMenu = CreateMenu();
-    HMENU hClipLineMenu = CreateMenu();
-    HMENU hClipPolyMenu = CreateMenu();
+void FinishDrawing() {
+    if (g_currentPoints.empty()) { g_isDrawing = false; return; }
 
-    AppendMenu(hDrawMenu, MF_STRING, ID_DRAW_LINE_MIDPOINT, L"直线 (中点法)");
-    AppendMenu(hDrawMenu, MF_STRING, ID_DRAW_LINE_BRESENHAM, L"直线 (Bresenham)");
-    AppendMenu(hDrawMenu, MF_STRING, ID_DRAW_CIRCLE_MIDPOINT, L"圆 (中点法)");
-    AppendMenu(hDrawMenu, MF_STRING, ID_DRAW_CIRCLE_BRESENHAM, L"圆 (Bresenham)");
-    AppendMenu(hDrawMenu, MF_STRING, ID_DRAW_RECTANGLE, L"矩形");
-    AppendMenu(hDrawMenu, MF_STRING, ID_DRAW_POLYGON, L"多边形");
-    AppendMenu(hDrawMenu, MF_STRING, ID_DRAW_BSPLINE, L"B样条曲线");
-    AppendMenu(hMenu, MF_POPUP, (UINT_PTR)hDrawMenu, L"绘图");
+    Shape s;
+    s.type = g_currentMode;
+    s.vertices = g_currentPoints;
+    s.color = g_drawColor;
+    s.fillColor = g_fillColor;
+    s.fillMode = 0;
 
-    AppendMenu(hFillMenu, MF_STRING, ID_FILL_SCANLINE, L"扫描线填充");
-    AppendMenu(hFillMenu, MF_STRING, ID_FILL_FENCE, L"栅栏填充(无种子)");
-    AppendMenu(hMenu, MF_POPUP, (UINT_PTR)hFillMenu, L"填充");
-
-    AppendMenu(hTransMenu, MF_STRING, ID_TRANS_TRANSLATE, L"平移");
-    AppendMenu(hTransMenu, MF_STRING, ID_TRANS_SCALE, L"缩放(含滚轮)");
-    AppendMenu(hTransMenu, MF_STRING, ID_TRANS_ROTATE, L"旋转(绕鼠标点)");
-    AppendMenu(hMenu, MF_POPUP, (UINT_PTR)hTransMenu, L"变换");
-
-    AppendMenu(hClipLineMenu, MF_STRING, ID_CLIP_LINE_CS, L"直线裁剪 - Cohen-Sutherland");
-    AppendMenu(hClipLineMenu, MF_STRING, ID_CLIP_LINE_MID, L"直线裁剪 - 中点分割");
-    AppendMenu(hMenu, MF_POPUP, (UINT_PTR)hClipLineMenu, L"线裁剪");
-
-    AppendMenu(hClipPolyMenu, MF_STRING, ID_CLIP_POLY_SH, L"多边形裁剪 - Sutherland-Hodgman");
-    AppendMenu(hClipPolyMenu, MF_STRING, ID_CLIP_POLY_WA, L"多边形裁剪 - Weiler-Atherton");
-    AppendMenu(hMenu, MF_POPUP, (UINT_PTR)hClipPolyMenu, L"多边形裁剪");
-
-    AppendMenu(hEditMenu, MF_STRING, ID_EDIT_FINISH, L"完成当前图形");
-    AppendMenu(hEditMenu, MF_STRING, ID_EDIT_CLEAR, L"清空画布");
-    AppendMenu(hMenu, MF_POPUP, (UINT_PTR)hEditMenu, L"编辑");
-
-    SetMenu(hwnd, hMenu);
-}
-
-//----------------------------------------
-void OnPaint(HWND hwnd) {
-    PAINTSTRUCT ps;
-    HDC hdc = BeginPaint(hwnd, &ps);
-    RECT rc; GetClientRect(hwnd, &rc);
-
-    FillRect(g_hdcMem, &rc, (HBRUSH)GetStockObject(WHITE_BRUSH));
-    RedrawAllShapes(g_hdcMem);
-
-    if (g_currentMode == DrawMode::DrawPolygon && g_currentPoints.size() >= 2)
-        DrawPolyline(g_hdcMem, g_currentPoints, g_drawColor, false);
-
-    if (g_currentMode == DrawMode::DrawBSpline && !g_currentPoints.empty()) {
-        for (auto& p : g_currentPoints)
-            Ellipse(g_hdcMem, p.x - 3, p.y - 3, p.x + 3, p.y + 3);
-        if (g_currentPoints.size() > 1)
-            DrawPolyline(g_hdcMem, g_currentPoints, RGB(200, 200, 200), false);
-        if (g_currentPoints.size() >= 4)
-            DrawBSpline(g_hdcMem, g_currentPoints, g_drawColor);
+    if (s.type == DrawMode::DrawPolygon && s.vertices.size() < 3) {
+    }
+    else if (s.type == DrawMode::DrawBSpline && s.vertices.size() < 4) {
+    }
+    else {
+        g_shapes.push_back(s);
     }
 
-    BitBlt(hdc, 0, 0, rc.right - rc.left, rc.bottom - rc.top, g_hdcMem, 0, 0, SRCCOPY);
-    EndPaint(hwnd, &ps);
+    g_currentPoints.clear();
+    if (g_currentMode != DrawMode::DrawPolygon &&
+        g_currentMode != DrawMode::DrawBSpline) {
+        g_isDrawing = false;
+    }
+    if (g_hwnd)
+        InvalidateRect(g_hwnd, NULL, FALSE);
 }
 
-//----------------------------------------
-void OnLButtonDown(int x, int y) {
+void ClearCanvas() {
+    g_shapes.clear();
+    g_currentPoints.clear();
+    g_isDrawing = false;
+    g_currentMode = DrawMode::None;
+    g_selectedShapeIndex = -1;
+    if (g_hwnd)
+        InvalidateRect(g_hwnd, NULL, TRUE);
+}
+
+void RedrawAllShapesOn(HDC hdc, const std::vector<Shape>& shapes) {
+    for (const auto& s : shapes) {
+        if (s.fillMode == 1)
+            FillShapeScanline(hdc, s, s.fillColor);
+        else if (s.fillMode == 2)
+            FillShapeFence(hdc, s, s.fillColor);
+        DrawShapeBorder(hdc, s);
+    }
+}
+
+void RedrawAllShapes(HDC hdc) {
+    RedrawAllShapesOn(hdc, g_shapes);
+}
+
+} // namespace
+
+void Initialize(HWND hwnd) {
+    g_hwnd = hwnd;
+    RecreateBackBuffer(hwnd);
+}
+
+void Shutdown() {
+    if (g_hbmMem) {
+        DeleteObject(g_hbmMem);
+        g_hbmMem = nullptr;
+    }
+    if (g_hdcMem) {
+        DeleteDC(g_hdcMem);
+        g_hdcMem = nullptr;
+    }
+    g_hwnd = nullptr;
+    g_shapes.clear();
+    g_currentPoints.clear();
+    g_isDrawing = false;
+    g_selectedShapeIndex = -1;
+}
+
+void Resize(HWND hwnd) {
+    g_hwnd = hwnd;
+    if (!g_hdcMem) {
+        RecreateBackBuffer(hwnd);
+    }
+    else {
+        RecreateBackBuffer(hwnd);
+    }
+    InvalidateRect(hwnd, NULL, FALSE);
+}
+
+void HandleCommand(int commandId) {
+    switch (commandId) {
+    case ID_DRAW_LINE_MIDPOINT:
+        g_currentMode = DrawMode::DrawLineMidpoint;   g_currentPoints.clear(); g_isDrawing = false; break;
+    case ID_DRAW_LINE_BRESENHAM:
+        g_currentMode = DrawMode::DrawLineBresenham;  g_currentPoints.clear(); g_isDrawing = false; break;
+    case ID_DRAW_CIRCLE_MIDPOINT:
+        g_currentMode = DrawMode::DrawCircleMidpoint; g_currentPoints.clear(); g_isDrawing = false; break;
+    case ID_DRAW_CIRCLE_BRESENHAM:
+        g_currentMode = DrawMode::DrawCircleBresenham;g_currentPoints.clear(); g_isDrawing = false; break;
+    case ID_DRAW_RECTANGLE:
+        g_currentMode = DrawMode::DrawRectangle;      g_currentPoints.clear(); g_isDrawing = false; break;
+    case ID_DRAW_POLYGON:
+        g_currentMode = DrawMode::DrawPolygon;        g_currentPoints.clear(); g_isDrawing = true;  break;
+    case ID_DRAW_BSPLINE:
+        g_currentMode = DrawMode::DrawBSpline;        g_currentPoints.clear(); g_isDrawing = true;  break;
+    case ID_FILL_SCANLINE:
+        g_currentMode = DrawMode::FillScanline;       break;
+    case ID_FILL_FENCE:
+        g_currentMode = DrawMode::FillFence;          break;
+    case ID_TRANS_TRANSLATE:
+        g_currentMode = DrawMode::TransformTranslate; g_isDrawing = false; g_selectedShapeIndex = -1; break;
+    case ID_TRANS_SCALE:
+        g_currentMode = DrawMode::TransformScale;     g_isDrawing = false; g_selectedShapeIndex = -1; break;
+    case ID_TRANS_ROTATE:
+        g_currentMode = DrawMode::TransformRotate;    g_isDrawing = false; g_selectedShapeIndex = -1; break;
+    case ID_CLIP_LINE_CS:
+        g_currentMode = DrawMode::ClipLineCS;         g_isDrawing = false; break;
+    case ID_CLIP_LINE_MID:
+        g_currentMode = DrawMode::ClipLineMid;        g_isDrawing = false; break;
+    case ID_CLIP_POLY_SH:
+        g_currentMode = DrawMode::ClipPolySH;         g_isDrawing = false; break;
+    case ID_CLIP_POLY_WA:
+        g_currentMode = DrawMode::ClipPolyWA;         g_isDrawing = false; break;
+    case ID_EDIT_FINISH:
+        FinishDrawing();                              break;
+    case ID_EDIT_CLEAR:
+        ClearCanvas();                                break;
+    default:
+        break;
+    }
+}
+
+void HandleLButtonDown(int x, int y) {
     switch (g_currentMode) {
-        // 绘制
     case DrawMode::DrawLineMidpoint:
     case DrawMode::DrawLineBresenham:
     case DrawMode::DrawCircleMidpoint:
@@ -1070,10 +923,10 @@ void OnLButtonDown(int x, int y) {
     case DrawMode::DrawPolygon:
     case DrawMode::DrawBSpline:
         g_currentPoints.push_back({ x, y });
-        InvalidateRect(g_hwnd, NULL, FALSE);
+        if (g_hwnd)
+            InvalidateRect(g_hwnd, NULL, FALSE);
         break;
 
-        // 填充
     case DrawMode::FillScanline:
     case DrawMode::FillFence: {
         for (auto& s : g_shapes) {
@@ -1081,19 +934,21 @@ void OnLButtonDown(int x, int y) {
                 s.fillColor = g_fillColor;
                 if (g_currentMode == DrawMode::FillScanline) {
                     s.fillMode = 1;
-                    FillShapeScanline(g_hdcMem, s, s.fillColor);
+                    if (g_hdcMem)
+                        FillShapeScanline(g_hdcMem, s, s.fillColor);
                 }
                 else {
                     s.fillMode = 2;
-                    FillShapeFence(g_hdcMem, s, s.fillColor);
+                    if (g_hdcMem)
+                        FillShapeFence(g_hdcMem, s, s.fillColor);
                 }
-                InvalidateRect(g_hwnd, NULL, FALSE);
+                if (g_hwnd)
+                    InvalidateRect(g_hwnd, NULL, FALSE);
                 break;
             }
         }
     } break;
 
-                            // 平移：第一次选中 + 起点，第二次确定
     case DrawMode::TransformTranslate: {
         if (!g_isDrawing) {
             int idx = HitTestShape(x, y);
@@ -1109,11 +964,11 @@ void OnLButtonDown(int x, int y) {
             if (g_selectedShapeIndex >= 0 && g_selectedShapeIndex < (int)g_shapes.size())
                 TranslateShape(g_shapes[g_selectedShapeIndex], dx, dy);
             g_isDrawing = false;
-            InvalidateRect(g_hwnd, NULL, FALSE);
+            if (g_hwnd)
+                InvalidateRect(g_hwnd, NULL, FALSE);
         }
     } break;
 
-                                     // 缩放：第一次选中 + 中心，第二次确定比例
     case DrawMode::TransformScale: {
         if (!g_isDrawing) {
             int idx = HitTestShape(x, y);
@@ -1139,11 +994,11 @@ void OnLButtonDown(int x, int y) {
             if (g_selectedShapeIndex >= 0 && g_selectedShapeIndex < (int)g_shapes.size())
                 ScaleShape(g_shapes[g_selectedShapeIndex], g_firstClick, s, s);
             g_isDrawing = false;
-            InvalidateRect(g_hwnd, NULL, FALSE);
+            if (g_hwnd)
+                InvalidateRect(g_hwnd, NULL, FALSE);
         }
     } break;
 
-                                 // 旋转：第一次选中 + 中心，第二次确定角度
     case DrawMode::TransformRotate: {
         if (!g_isDrawing) {
             int idx = HitTestShape(x, y);
@@ -1167,11 +1022,11 @@ void OnLButtonDown(int x, int y) {
             if (g_selectedShapeIndex >= 0 && g_selectedShapeIndex < (int)g_shapes.size())
                 RotateShape(g_shapes[g_selectedShapeIndex], g_firstClick, delta);
             g_isDrawing = false;
-            InvalidateRect(g_hwnd, NULL, FALSE);
+            if (g_hwnd)
+                InvalidateRect(g_hwnd, NULL, FALSE);
         }
     } break;
 
-                                  // 裁剪：两次点击确定矩形窗口
     case DrawMode::ClipLineCS:
     case DrawMode::ClipLineMid:
     case DrawMode::ClipPolySH:
@@ -1198,7 +1053,8 @@ void OnLButtonDown(int x, int y) {
             else if (g_currentMode == DrawMode::ClipPolyWA)
                 ClipAllPolygons_WA(rc);
 
-            InvalidateRect(g_hwnd, NULL, FALSE);
+            if (g_hwnd)
+                InvalidateRect(g_hwnd, NULL, FALSE);
         }
     } break;
 
@@ -1206,10 +1062,11 @@ void OnLButtonDown(int x, int y) {
     }
 }
 
-//----------------------------------------
-// 鼠标移动：绘制 + 变换预览
-//----------------------------------------
-void OnMouseMove(int x, int y) {
+void HandleMouseMove(int x, int y) {
+    if (!g_hwnd || !g_hdcMem) {
+        return;
+    }
+
     HDC hdc = GetDC(g_hwnd);
     RECT rc; GetClientRect(g_hwnd, &rc);
 
@@ -1218,7 +1075,6 @@ void OnMouseMove(int x, int y) {
     std::vector<Shape> temp;
     const std::vector<Shape>* shapesToDraw = &g_shapes;
 
-    // 变换预览：用 temp 替换其中一个图形
     if (g_isDrawing) {
         switch (g_currentMode) {
         case DrawMode::TransformTranslate:
@@ -1260,7 +1116,6 @@ void OnMouseMove(int x, int y) {
 
     RedrawAllShapesOn(g_hdcMem, *shapesToDraw);
 
-    // 图元绘制预览（线、多边形、B样条）
     if (g_isDrawing && !g_currentPoints.empty()) {
         Point p0 = g_currentPoints[0];
         switch (g_currentMode) {
@@ -1289,56 +1144,52 @@ void OnMouseMove(int x, int y) {
         }
     }
 
-    BitBlt(hdc, 0, 0, rc.right, rc.bottom, g_hdcMem, 0, 0, SRCCOPY);
+    BitBlt(hdc, 0, 0, rc.right - rc.left, rc.bottom - rc.top, g_hdcMem, 0, 0, SRCCOPY);
     ReleaseDC(g_hwnd, hdc);
 }
 
-//----------------------------------------
-void ClearCanvas() {
-    g_shapes.clear();
-    g_currentPoints.clear();
-    g_isDrawing = false;
-    g_currentMode = DrawMode::None;
-    g_selectedShapeIndex = -1;
-    InvalidateRect(g_hwnd, NULL, TRUE);
-}
-
-void FinishDrawing() {
-    if (g_currentPoints.empty()) { g_isDrawing = false; return; }
-
-    Shape s;
-    s.type = g_currentMode;
-    s.vertices = g_currentPoints;
-    s.color = g_drawColor;
-    s.fillColor = g_fillColor;
-    s.fillMode = 0;
-
-    if (s.type == DrawMode::DrawPolygon && s.vertices.size() < 3) {
-    }
-    else if (s.type == DrawMode::DrawBSpline && s.vertices.size() < 4) {
-    }
-    else {
-        g_shapes.push_back(s);
-    }
-
-    g_currentPoints.clear();
-    if (g_currentMode != DrawMode::DrawPolygon &&
-        g_currentMode != DrawMode::DrawBSpline) {
-        g_isDrawing = false;
-    }
-    InvalidateRect(g_hwnd, NULL, FALSE);
-}
-
-void RedrawAllShapesOn(HDC hdc, const std::vector<Shape>& shapes) {
-    for (const auto& s : shapes) {
-        if (s.fillMode == 1)
-            FillShapeScanline(hdc, s, s.fillColor);
-        else if (s.fillMode == 2)
-            FillShapeFence(hdc, s, s.fillColor);
-        DrawShapeBorder(hdc, s);
+void HandleMouseWheel(short delta) {
+    if (g_currentMode == DrawMode::TransformScale &&
+        g_selectedShapeIndex >= 0 &&
+        g_selectedShapeIndex < (int)g_shapes.size()) {
+        double step = 0.1;
+        double s = 1.0 + step * (delta / 120.0);
+        if (s < 0.1) s = 0.1;
+        ScaleShape(g_shapes[g_selectedShapeIndex], g_firstClick, s, s);
+        if (g_hwnd)
+            InvalidateRect(g_hwnd, NULL, FALSE);
     }
 }
 
-void RedrawAllShapes(HDC hdc) {
-    RedrawAllShapesOn(hdc, g_shapes);
+void OnPaint(HWND hwnd) {
+    if (!g_hdcMem) {
+        PAINTSTRUCT ps;
+        BeginPaint(hwnd, &ps);
+        EndPaint(hwnd, &ps);
+        return;
+    }
+
+    PAINTSTRUCT ps;
+    HDC hdc = BeginPaint(hwnd, &ps);
+    RECT rc; GetClientRect(hwnd, &rc);
+
+    FillRect(g_hdcMem, &rc, (HBRUSH)GetStockObject(WHITE_BRUSH));
+    RedrawAllShapes(g_hdcMem);
+
+    if (g_currentMode == DrawMode::DrawPolygon && g_currentPoints.size() >= 2)
+        DrawPolyline(g_hdcMem, g_currentPoints, g_drawColor, false);
+
+    if (g_currentMode == DrawMode::DrawBSpline && !g_currentPoints.empty()) {
+        for (auto& p : g_currentPoints)
+            Ellipse(g_hdcMem, p.x - 3, p.y - 3, p.x + 3, p.y + 3);
+        if (g_currentPoints.size() > 1)
+            DrawPolyline(g_hdcMem, g_currentPoints, RGB(200, 200, 200), false);
+        if (g_currentPoints.size() >= 4)
+            DrawBSpline(g_hdcMem, g_currentPoints, g_drawColor);
+    }
+
+    BitBlt(hdc, 0, 0, rc.right - rc.left, rc.bottom - rc.top, g_hdcMem, 0, 0, SRCCOPY);
+    EndPaint(hwnd, &ps);
 }
+
+} // namespace GraphicsEngine
