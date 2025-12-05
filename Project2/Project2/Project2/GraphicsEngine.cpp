@@ -33,6 +33,8 @@ Point g_firstClick{ 0, 0 };
 double g_scaleBaseDist = 1.0;
 double g_rotBaseAngle = 0.0;
 
+Point g_currentMousePos{ 0, 0 };
+
 // ===== Internal helper functions =====
 void RecreateBackBuffer(HWND hwnd) {
     if (!hwnd) return;
@@ -93,13 +95,46 @@ static void ClearCanvas() {
         InvalidateRect(g_hwnd, NULL, TRUE);
 }
 
-static void RedrawAllShapesOn(HDC hdc, const std::vector<Shape>& shapes) {
-    for (const auto& s : shapes) {
+static void RedrawAllShapesOn(HDC hdc, const std::vector<Shape>& shapes, int highlightIndex = -1) {
+    for (size_t i = 0; i < shapes.size(); i++) {
+        const auto& s = shapes[i];
         if (s.fillMode == 1)
             FillShapeScanline(hdc, s, s.fillColor);
         else if (s.fillMode == 2)
             FillShapeFence(hdc, s, s.fillColor);
         DrawShapeBorder(hdc, s);
+        
+        // 高亮显示选中的图形
+        if ((int)i == highlightIndex && !s.vertices.empty()) {
+            // 绘制选中边框（虚线）
+            HPEN hPenHighlight = CreatePen(PS_DASH, 2, RGB(0, 120, 255));
+            HPEN hOldPen = (HPEN)SelectObject(hdc, hPenHighlight);
+            HBRUSH hOldBrush = (HBRUSH)SelectObject(hdc, GetStockObject(NULL_BRUSH));
+            
+            // 计算包围盒
+            LONG minX = s.vertices[0].x, maxX = s.vertices[0].x;
+            LONG minY = s.vertices[0].y, maxY = s.vertices[0].y;
+            for (const auto& v : s.vertices) {
+                if (v.x < minX) minX = v.x;
+                if (v.x > maxX) maxX = v.x;
+                if (v.y < minY) minY = v.y;
+                if (v.y > maxY) maxY = v.y;
+            }
+            // 绘制包围盒
+            Rectangle(hdc, minX - 5, minY - 5, maxX + 5, maxY + 5);
+            
+            // 绘制控制点
+            HBRUSH hBrushPoint = CreateSolidBrush(RGB(0, 120, 255));
+            for (const auto& v : s.vertices) {
+                RECT rcPoint = { v.x - 4, v.y - 4, v.x + 4, v.y + 4 };
+                FillRect(hdc, &rcPoint, hBrushPoint);
+            }
+            DeleteObject(hBrushPoint);
+            
+            SelectObject(hdc, hOldBrush);
+            SelectObject(hdc, hOldPen);
+            DeleteObject(hPenHighlight);
+        }
     }
 }
 
@@ -338,8 +373,28 @@ void HandleLButtonDown(int x, int y) {
     }
 }
 
+// 绘制裁剪预览矩形
+static void DrawClipPreviewRect(HDC hdc, const Point& p1, const Point& p2) {
+    HPEN hPen = CreatePen(PS_DASH, 1, RGB(255, 0, 0));
+    HPEN hOldPen = (HPEN)SelectObject(hdc, hPen);
+    HBRUSH hOldBrush = (HBRUSH)SelectObject(hdc, GetStockObject(NULL_BRUSH));
+    
+    LONG left = (std::min)(p1.x, p2.x);
+    LONG right = (std::max)(p1.x, p2.x);
+    LONG top = (std::min)(p1.y, p2.y);
+    LONG bottom = (std::max)(p1.y, p2.y);
+    
+    Rectangle(hdc, left, top, right, bottom);
+    
+    SelectObject(hdc, hOldBrush);
+    SelectObject(hdc, hOldPen);
+    DeleteObject(hPen);
+}
+
 void HandleMouseMove(int x, int y) {
     if (!g_hwnd || !g_hdcMem) return;
+    
+    g_currentMousePos = { x, y };
 
     HDC hdc = GetDC(g_hwnd);
     RECT rc; GetClientRect(g_hwnd, &rc);
@@ -348,6 +403,7 @@ void HandleMouseMove(int x, int y) {
 
     std::vector<Shape> temp;
     const std::vector<Shape>* shapesToDraw = &g_shapes;
+    int highlightIdx = -1;
 
     if (g_isDrawing) {
         switch (g_currentMode) {
@@ -358,6 +414,7 @@ void HandleMouseMove(int x, int y) {
                 int ddy = y - g_firstClick.y;
                 TranslateShape(temp[g_selectedShapeIndex], ddx, ddy);
                 shapesToDraw = &temp;
+                highlightIdx = g_selectedShapeIndex;
             }
             break;
         case DrawMode::TransformScale:
@@ -370,6 +427,7 @@ void HandleMouseMove(int x, int y) {
                 if (s < 0.01) s = 0.01;
                 ScaleShape(temp[g_selectedShapeIndex], g_firstClick, s, s);
                 shapesToDraw = &temp;
+                highlightIdx = g_selectedShapeIndex;
             }
             break;
         case DrawMode::TransformRotate:
@@ -381,6 +439,7 @@ void HandleMouseMove(int x, int y) {
                 double delta = ang1 - g_rotBaseAngle;
                 RotateShape(temp[g_selectedShapeIndex], g_firstClick, delta);
                 shapesToDraw = &temp;
+                highlightIdx = g_selectedShapeIndex;
             }
             break;
         default:
@@ -388,7 +447,15 @@ void HandleMouseMove(int x, int y) {
         }
     }
 
-    RedrawAllShapesOn(g_hdcMem, *shapesToDraw);
+    RedrawAllShapesOn(g_hdcMem, *shapesToDraw, highlightIdx);
+    
+    // 绘制裁剪预览矩形
+    if (g_isDrawing && (g_currentMode == DrawMode::ClipLineCS ||
+                        g_currentMode == DrawMode::ClipLineMid ||
+                        g_currentMode == DrawMode::ClipPolySH ||
+                        g_currentMode == DrawMode::ClipPolyWA)) {
+        DrawClipPreviewRect(g_hdcMem, g_firstClick, { x, y });
+    }
 
     if (g_isDrawing && !g_currentPoints.empty()) {
         Point p0 = g_currentPoints[0];

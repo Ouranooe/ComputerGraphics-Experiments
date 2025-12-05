@@ -23,6 +23,9 @@ extern Point g_firstClick;
 extern double g_scaleBaseDist;
 extern double g_rotBaseAngle;
 
+// 鼠标当前位置（用于预览）
+extern Point g_currentMousePos;
+
 void RecreateBackBuffer(HWND hwnd);
 
 } // namespace GraphicsEngine
