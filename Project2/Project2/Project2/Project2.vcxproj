@@ -127,13 +127,26 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClInclude Include="Clip.h" />
+    <ClInclude Include="DrawingPrimitives.h" />
+    <ClInclude Include="Fill.h" />
     <ClInclude Include="framework.h" />
+    <ClInclude Include="GraphicsEngine.h" />
+    <ClInclude Include="GraphicsState.h" />
     <ClInclude Include="Project2.h" />
     <ClInclude Include="Resource.h" />
+    <ClInclude Include="Shapes.h" />
     <ClInclude Include="targetver.h" />
+    <ClInclude Include="Transform.h" />
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="Project2.cpp" />
+    <ClCompile Include="Clip.cpp" />
+    <ClCompile Include="DrawingPrimitives.cpp" />
+    <ClCompile Include="Fill.cpp" />
+    <ClCompile Include="GraphicsEngine.cpp" />
+    <ClCompile Include="Main.cpp" />
+    <ClCompile Include="Shapes.cpp" />
+    <ClCompile Include="Transform.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="Project2.rc" />

@@ -1,4 +1,4 @@
-#include "framework.h"
+﻿#include "framework.h"
 #include <windowsx.h>
 
 #include "GraphicsEngine.h"
@@ -100,35 +100,35 @@ static void CreateMenuSystem(HWND hwnd) {
     HMENU hClipLineMenu = CreateMenu();
     HMENU hClipPolyMenu = CreateMenu();
 
-    AppendMenu(hDrawMenu, MF_STRING, GraphicsEngine::ID_DRAW_LINE_MIDPOINT, L"直线 (中点法)");
-    AppendMenu(hDrawMenu, MF_STRING, GraphicsEngine::ID_DRAW_LINE_BRESENHAM, L"直线 (Bresenham)");
-    AppendMenu(hDrawMenu, MF_STRING, GraphicsEngine::ID_DRAW_CIRCLE_MIDPOINT, L"圆 (中点法)");
-    AppendMenu(hDrawMenu, MF_STRING, GraphicsEngine::ID_DRAW_CIRCLE_BRESENHAM, L"圆 (Bresenham)");
-    AppendMenu(hDrawMenu, MF_STRING, GraphicsEngine::ID_DRAW_RECTANGLE, L"矩形");
-    AppendMenu(hDrawMenu, MF_STRING, GraphicsEngine::ID_DRAW_POLYGON, L"多边形");
-    AppendMenu(hDrawMenu, MF_STRING, GraphicsEngine::ID_DRAW_BSPLINE, L"B样条曲线");
-    AppendMenu(hMenu, MF_POPUP, reinterpret_cast<UINT_PTR>(hDrawMenu), L"绘图");
+    AppendMenuW(hDrawMenu, MF_STRING, GraphicsEngine::ID_DRAW_LINE_MIDPOINT, L"直线 (中点法)");
+    AppendMenuW(hDrawMenu, MF_STRING, GraphicsEngine::ID_DRAW_LINE_BRESENHAM, L"直线 (Bresenham)");
+    AppendMenuW(hDrawMenu, MF_STRING, GraphicsEngine::ID_DRAW_CIRCLE_MIDPOINT, L"圆 (中点法)");
+    AppendMenuW(hDrawMenu, MF_STRING, GraphicsEngine::ID_DRAW_CIRCLE_BRESENHAM, L"圆 (Bresenham)");
+    AppendMenuW(hDrawMenu, MF_STRING, GraphicsEngine::ID_DRAW_RECTANGLE, L"矩形");
+    AppendMenuW(hDrawMenu, MF_STRING, GraphicsEngine::ID_DRAW_POLYGON, L"多边形");
+    AppendMenuW(hDrawMenu, MF_STRING, GraphicsEngine::ID_DRAW_BSPLINE, L"B样条曲线");
+    AppendMenuW(hMenu, MF_POPUP, reinterpret_cast<UINT_PTR>(hDrawMenu), L"绘图");
 
-    AppendMenu(hFillMenu, MF_STRING, GraphicsEngine::ID_FILL_SCANLINE, L"扫描线填充");
-    AppendMenu(hFillMenu, MF_STRING, GraphicsEngine::ID_FILL_FENCE, L"栅栏填充(无种子)");
-    AppendMenu(hMenu, MF_POPUP, reinterpret_cast<UINT_PTR>(hFillMenu), L"填充");
+    AppendMenuW(hFillMenu, MF_STRING, GraphicsEngine::ID_FILL_SCANLINE, L"扫描线填充");
+    AppendMenuW(hFillMenu, MF_STRING, GraphicsEngine::ID_FILL_FENCE, L"栅栏填充");
+    AppendMenuW(hMenu, MF_POPUP, reinterpret_cast<UINT_PTR>(hFillMenu), L"填充");
 
-    AppendMenu(hTransMenu, MF_STRING, GraphicsEngine::ID_TRANS_TRANSLATE, L"平移");
-    AppendMenu(hTransMenu, MF_STRING, GraphicsEngine::ID_TRANS_SCALE, L"缩放(含滚轮)");
-    AppendMenu(hTransMenu, MF_STRING, GraphicsEngine::ID_TRANS_ROTATE, L"旋转(绕鼠标点)");
-    AppendMenu(hMenu, MF_POPUP, reinterpret_cast<UINT_PTR>(hTransMenu), L"变换");
+    AppendMenuW(hTransMenu, MF_STRING, GraphicsEngine::ID_TRANS_TRANSLATE, L"平移");
+    AppendMenuW(hTransMenu, MF_STRING, GraphicsEngine::ID_TRANS_SCALE, L"缩放 (滚轮)");
+    AppendMenuW(hTransMenu, MF_STRING, GraphicsEngine::ID_TRANS_ROTATE, L"旋转");
+    AppendMenuW(hMenu, MF_POPUP, reinterpret_cast<UINT_PTR>(hTransMenu), L"变换"); 
 
-    AppendMenu(hClipLineMenu, MF_STRING, GraphicsEngine::ID_CLIP_LINE_CS, L"直线裁剪 - Cohen-Sutherland");
-    AppendMenu(hClipLineMenu, MF_STRING, GraphicsEngine::ID_CLIP_LINE_MID, L"直线裁剪 - 中点分割");
-    AppendMenu(hMenu, MF_POPUP, reinterpret_cast<UINT_PTR>(hClipLineMenu), L"线裁剪");
+    AppendMenuW(hClipLineMenu, MF_STRING, GraphicsEngine::ID_CLIP_LINE_CS, L"Cohen-Sutherland");
+    AppendMenuW(hClipLineMenu, MF_STRING, GraphicsEngine::ID_CLIP_LINE_MID, L"中点分割");
+    AppendMenuW(hMenu, MF_POPUP, reinterpret_cast<UINT_PTR>(hClipLineMenu), L"线段裁剪");
 
-    AppendMenu(hClipPolyMenu, MF_STRING, GraphicsEngine::ID_CLIP_POLY_SH, L"多边形裁剪 - Sutherland-Hodgman");
-    AppendMenu(hClipPolyMenu, MF_STRING, GraphicsEngine::ID_CLIP_POLY_WA, L"多边形裁剪 - Weiler-Atherton");
-    AppendMenu(hMenu, MF_POPUP, reinterpret_cast<UINT_PTR>(hClipPolyMenu), L"多边形裁剪");
+    AppendMenuW(hClipPolyMenu, MF_STRING, GraphicsEngine::ID_CLIP_POLY_SH, L"Sutherland-Hodgman");
+    AppendMenuW(hClipPolyMenu, MF_STRING, GraphicsEngine::ID_CLIP_POLY_WA, L"Weiler-Atherton");
+    AppendMenuW(hMenu, MF_POPUP, reinterpret_cast<UINT_PTR>(hClipPolyMenu), L"多边形裁剪");
 
-    AppendMenu(hEditMenu, MF_STRING, GraphicsEngine::ID_EDIT_FINISH, L"完成当前图形");
-    AppendMenu(hEditMenu, MF_STRING, GraphicsEngine::ID_EDIT_CLEAR, L"清空画布");
-    AppendMenu(hMenu, MF_POPUP, reinterpret_cast<UINT_PTR>(hEditMenu), L"编辑");
+    AppendMenuW(hEditMenu, MF_STRING, GraphicsEngine::ID_EDIT_FINISH, L"完成当前图形");
+    AppendMenuW(hEditMenu, MF_STRING, GraphicsEngine::ID_EDIT_CLEAR, L"清空画布");
+    AppendMenuW(hMenu, MF_POPUP, reinterpret_cast<UINT_PTR>(hEditMenu), L"编辑");
 
     SetMenu(hwnd, hMenu);
 }
