@@ -223,6 +223,115 @@ std::vector<Point> ClipPolygon_SutherlandHodgman(const std::vector<Point>& poly,
     return out;
 }
 
+// 判断点是否在裁剪边界上
+static bool SH_PointOnBoundary(const Point& p, const RECT& r) {
+    return p.x == r.left || p.x == r.right || p.y == r.top || p.y == r.bottom;
+}
+
+// 获取点所在的边界（0=左，1=右，2=上，3=下，-1=不在边界）
+static int SH_GetBoundaryId(const Point& p, const RECT& r) {
+    if (p.x == r.left) return 0;
+    if (p.x == r.right) return 1;
+    if (p.y == r.top) return 2;
+    if (p.y == r.bottom) return 3;
+    return -1;
+}
+
+// 判断两点是否在同一裁剪边界上
+static bool SH_OnSameBoundary(const Point& p1, const Point& p2, const RECT& r) {
+    int b1 = SH_GetBoundaryId(p1, r);
+    int b2 = SH_GetBoundaryId(p2, r);
+    return b1 >= 0 && b1 == b2;
+}
+
+// 判断边是否是"桥接边"（连接两个独立区域的边界边）
+// 桥接边的特征：两端点都在同一边界上，且这条边沿着边界方向移动
+static bool SH_IsBridgeEdge(const Point& p1, const Point& p2, const RECT& r) {
+    if (!SH_PointOnBoundary(p1, r) || !SH_PointOnBoundary(p2, r)) return false;
+    if (!SH_OnSameBoundary(p1, p2, r)) return false;
+    // 两点相同不算桥接边
+    if (p1.x == p2.x && p1.y == p2.y) return false;
+    return true;
+}
+
+// 将Sutherland-Hodgman裁剪结果分离成多个多边形
+std::vector<std::vector<Point>> SplitSHResult(const std::vector<Point>& poly, const RECT& r) {
+    std::vector<std::vector<Point>> results;
+    
+    if (poly.size() < 3) return results;
+    
+    size_t n = poly.size();
+    
+    // 首先检测所有桥接边的位置
+    std::vector<bool> isBridge(n, false);
+    int bridgeCount = 0;
+    
+    for (size_t i = 0; i < n; i++) {
+        const Point& p1 = poly[i];
+        const Point& p2 = poly[(i + 1) % n];
+        if (SH_IsBridgeEdge(p1, p2, r)) {
+            isBridge[i] = true;
+            bridgeCount++;
+        }
+    }
+    
+    // 如果没有桥接边，返回原多边形
+    if (bridgeCount == 0) {
+        results.push_back(poly);
+        return results;
+    }
+    
+    // 桥接边应该成对出现，每对桥接边分隔一个独立的多边形
+    // 从非桥接边的起点开始，收集顶点直到遇到桥接边
+    
+    std::vector<bool> visited(n, false);
+    
+    for (size_t start = 0; start < n; start++) {
+        // 寻找一个未访问的、前一条边是桥接边的顶点作为新多边形的起点
+        size_t prevEdge = (start + n - 1) % n;
+        if (visited[start]) continue;
+        if (!isBridge[prevEdge]) continue;  // 起点应该在桥接边之后
+        
+        std::vector<Point> currentPoly;
+        size_t idx = start;
+        
+        // 收集顶点直到再次遇到桥接边
+        do {
+            if (!visited[idx]) {
+                currentPoly.push_back(poly[idx]);
+                visited[idx] = true;
+            }
+            
+            // 检查当前边是否是桥接边
+            if (isBridge[idx]) {
+                // 遇到桥接边，当前多边形结束
+                break;
+            }
+            
+            idx = (idx + 1) % n;
+        } while (idx != start);
+        
+        if (currentPoly.size() >= 3) {
+            results.push_back(currentPoly);
+        }
+    }
+    
+    // 处理可能遗漏的情况：如果没有桥接边作为起点
+    if (results.empty()) {
+        // 使用原来的简单方法：直接返回原多边形
+        results.push_back(poly);
+    }
+    
+    return results;
+}
+
+// Sutherland-Hodgman 裁剪并返回多个多边形
+std::vector<std::vector<Point>> ClipPolygon_SutherlandHodgman_Multi(const std::vector<Point>& poly, const RECT& r) {
+    std::vector<Point> clipped = ClipPolygon_SutherlandHodgman(poly, r);
+    if (clipped.size() < 3) return {};
+    return SplitSHResult(clipped, r);
+}
+
 // ============== Weiler-Atherton 完整实现 ==============
 
 // 顶点节点结构
@@ -275,9 +384,11 @@ static void WA_FreeList(WAVertex* head) {
     } while (curr && curr != head);
 }
 
-// Weiler-Atherton 算法主函数
-std::vector<Point> ClipPolygon_WeilerAtherton_Rect(const std::vector<Point>& poly, const RECT& r) {
-    if (poly.size() < 3) return {};
+// Weiler-Atherton 算法主函数 - 返回多个多边形
+std::vector<std::vector<Point>> ClipPolygon_WeilerAtherton_Rect_Multi(const std::vector<Point>& poly, const RECT& r) {
+    std::vector<std::vector<Point>> results;
+    
+    if (poly.size() < 3) return results;
     
     // 创建裁剪矩形的四个顶点（顺时针）
     std::vector<Point> clipPoly;
@@ -294,7 +405,10 @@ std::vector<Point> ClipPolygon_WeilerAtherton_Rect(const std::vector<Point>& pol
             break;
         }
     }
-    if (allInside) return poly;
+    if (allInside) {
+        results.push_back(poly);
+        return results;
+    }
     
     // 检查主多边形是否完全在裁剪区外
     bool allOutside = true;
@@ -305,7 +419,6 @@ std::vector<Point> ClipPolygon_WeilerAtherton_Rect(const std::vector<Point>& pol
         }
     }
     if (allOutside) {
-        // 可能还有交点，不能直接返回空
     }
     
     // 构建主多边形的循环链表
@@ -346,7 +459,7 @@ std::vector<Point> ClipPolygon_WeilerAtherton_Rect(const std::vector<Point>& pol
     std::vector<std::vector<std::pair<double, WAVertex*>>> subjIntersections(poly.size());
     std::vector<std::vector<std::pair<double, WAVertex*>>> clipIntersections(clipPoly.size());
     
-    // 计算所有交点
+    // 判断所有点，到底是出点还是入点
     for (size_t i = 0; i < poly.size(); i++) {
         size_t i2 = (i + 1) % poly.size();
         double sx1 = (double)poly[i].x, sy1 = (double)poly[i].y;
@@ -401,8 +514,11 @@ std::vector<Point> ClipPolygon_WeilerAtherton_Rect(const std::vector<Point>& pol
         WA_FreeList(subjHead);
         WA_FreeList(clipHead);
         
-        if (allInside) return poly;
-        return {};
+        if (allInside) {
+            results.push_back(poly);
+            return results;
+        }
+        return results;
     }
     
     // 按参数t排序每条边上的交点
@@ -438,74 +554,68 @@ std::vector<Point> ClipPolygon_WeilerAtherton_Rect(const std::vector<Point>& pol
         }
     }
     
-    // 收集结果多边形
-    std::vector<Point> result;
-    
-    // 从一个进入交点开始遍历
-    WAVertex* start = nullptr;
-    for (size_t i = 0; i < subjIntersections.size() && !start; i++) {
-        for (auto& p : subjIntersections[i]) {
-            if (p.second->isEntering && !p.second->visited) {
-                start = p.second;
-                break;
+    // 辅助函数：查找下一个未访问的进入交点
+    auto findNextEnteringPoint = [&subjIntersections]() -> WAVertex* {
+        for (size_t i = 0; i < subjIntersections.size(); i++) {
+            for (auto& p : subjIntersections[i]) {
+                if (p.second->isEntering && !p.second->visited) {
+                    return p.second;
+                }
             }
         }
-    }
+        return nullptr;
+    };
     
-    if (!start) {
-        // 没有进入点，释放资源并返回
-        // 需要分别释放主链表和裁剪链表，以及所有交点
-        WAVertex* curr = subjHead;
+    // 遍历所有未访问的进入点，生成多个多边形
+    WAVertex* start = findNextEnteringPoint();
+    
+    while (start != nullptr) {
+        std::vector<Point> result;
+        
+        // 遍历生成一个结果多边形
+        WAVertex* curr = start;
+        bool onSubject = true;  // 当前在主多边形上遍历
+        
         do {
-            WAVertex* next = curr->next;
-            if (!curr->isIntersection) delete curr;
-            curr = next;
-        } while (curr != subjHead);
-        
-        curr = clipHead;
-        do {
-            WAVertex* next = curr->next;
-            if (!curr->isIntersection) delete curr;
-            curr = next;
-        } while (curr != clipHead);
-        
-        for (auto& v : subjIntersections) {
-            for (auto& p : v) delete p.second;
-        }
-        
-        return {};
-    }
-    
-    // 遍历生成结果多边形
-    WAVertex* curr = start;
-    bool onSubject = true;  // 当前在主多边形上遍历
-    
-    do {
-        result.push_back({(LONG)std::round(curr->x), (LONG)std::round(curr->y)});
-        curr->visited = true;
-        if (curr->other) curr->other->visited = true;
-        
-        if (curr->isIntersection) {
-            // 切换到另一个多边形
-            if (curr->isEntering) {
-                // 进入点：沿主多边形前进
-                onSubject = true;
-            } else {
-                // 离开点：切换到裁剪多边形
-                onSubject = false;
+            result.push_back({(LONG)std::round(curr->x), (LONG)std::round(curr->y)});
+            curr->visited = true;
+            if (curr->other) curr->other->visited = true;
+            
+            if (curr->isIntersection) {
+                // 切换到另一个多边形
+                if (curr->isEntering) {
+                    // 进入点：沿主多边形前进
+                    onSubject = true;
+                } else {
+                    // 离开点：切换到裁剪多边形
+                    onSubject = false;
+                    curr = curr->other;
+                }
+            }
+            
+            curr = curr->next;
+            
+            // 如果遇到进入点但在裁剪多边形上，切回主多边形
+            if (curr->isIntersection && !onSubject && curr->other->isEntering) {
                 curr = curr->other;
+                onSubject = true;
             }
+            
+        } while (curr != start && result.size() < poly.size() * 4 + 10);
+        
+        // 如果生成的多边形有效（至少3个顶点），添加到结果列表
+        if (result.size() >= 3) {
+            results.push_back(result);
         }
         
-        curr = curr->next;
-        
-        // 如果遇到进入点但在裁剪多边形上，切回主多边形
-        if (curr->isIntersection && !onSubject && curr->other->isEntering) {
-            curr = curr->other;
-            onSubject = true;
-        }
-        
-    } while (curr != start && result.size() < poly.size() * 4 + 10);
+        // 查找下一个未访问的进入点
+        start = findNextEnteringPoint();
+    }
+    
+    // 如果没有生成任何多边形，检查是否有进入点（可能没有交点的情况已在前面处理）
+    if (results.empty()) {
+        // 释放资源并返回空
+    }
     
     // 清理内存
     WAVertex* v = subjHead;
@@ -521,31 +631,58 @@ std::vector<Point> ClipPolygon_WeilerAtherton_Rect(const std::vector<Point>& pol
         delete cv;
     }
     
-    return result;
+    return results;
+}
+
+// 兼容旧接口的包装函数
+std::vector<Point> ClipPolygon_WeilerAtherton_Rect(const std::vector<Point>& poly, const RECT& r) {
+    auto results = ClipPolygon_WeilerAtherton_Rect_Multi(poly, r);
+    if (results.empty()) return {};
+    return results[0];
 }
 
 void ClipAllPolygons_SH(const RECT& clip) {
+    std::vector<Shape> newShapes;
+    
     for (auto& s : g_shapes) {
-        if (s.type == DrawMode::DrawPolygon)
-            s.vertices = ClipPolygon_SutherlandHodgman(s.vertices, clip);
+        if (s.type == DrawMode::DrawPolygon) {
+            // 使用新的多多边形返回函数
+            auto clippedPolygons = ClipPolygon_SutherlandHodgman_Multi(s.vertices, clip);
+            for (auto& clippedPoly : clippedPolygons) {
+                if (clippedPoly.size() >= 3) {
+                    Shape ns = s;
+                    ns.vertices = clippedPoly;
+                    newShapes.push_back(ns);
+                }
+            }
+        } else {
+            newShapes.push_back(s);
+        }
     }
-    g_shapes.erase(
-        std::remove_if(g_shapes.begin(), g_shapes.end(),
-            [](const Shape& s) { return s.type == DrawMode::DrawPolygon && s.vertices.size() < 3; }),
-        g_shapes.end()
-    );
+    
+    g_shapes.swap(newShapes);
 }
 
 void ClipAllPolygons_WA(const RECT& clip) {
+    std::vector<Shape> newShapes;
+    
     for (auto& s : g_shapes) {
-        if (s.type == DrawMode::DrawPolygon)
-            s.vertices = ClipPolygon_WeilerAtherton_Rect(s.vertices, clip);
+        if (s.type == DrawMode::DrawPolygon) {
+            // 使用新的多多边形返回函数
+            auto clippedPolygons = ClipPolygon_WeilerAtherton_Rect_Multi(s.vertices, clip);
+            for (auto& clippedPoly : clippedPolygons) {
+                if (clippedPoly.size() >= 3) {
+                    Shape ns = s;
+                    ns.vertices = clippedPoly;
+                    newShapes.push_back(ns);
+                }
+            }
+        } else {
+            newShapes.push_back(s);
+        }
     }
-    g_shapes.erase(
-        std::remove_if(g_shapes.begin(), g_shapes.end(),
-            [](const Shape& s) { return s.type == DrawMode::DrawPolygon && s.vertices.size() < 3; }),
-        g_shapes.end()
-    );
+    
+    g_shapes.swap(newShapes);
 }
 
-} // namespace GraphicsEngine
+} 

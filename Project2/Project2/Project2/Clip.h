@@ -24,8 +24,13 @@ Point IntersectEdge(const Point& p1, const Point& p2, char edge, const RECT& r);
 bool InsideEdge(const Point& p, char edge, const RECT& r);
 std::vector<Point> ClipWithEdge(const std::vector<Point>& poly, char edge, const RECT& r);
 std::vector<Point> ClipPolygon_SutherlandHodgman(const std::vector<Point>& poly, const RECT& r);
+// 返回多个多边形（处理不连通的裁剪结果）
+std::vector<std::vector<Point>> ClipPolygon_SutherlandHodgman_Multi(const std::vector<Point>& poly, const RECT& r);
 
-// Weiler-Atherton 多边形裁剪 (简化版——使用SH)
+// Weiler-Atherton 多边形裁剪
+// 返回多个多边形（当裁剪结果不连通时）
+std::vector<std::vector<Point>> ClipPolygon_WeilerAtherton_Rect_Multi(const std::vector<Point>& poly, const RECT& r);
+// 兼容旧接口，只返回第一个多边形
 std::vector<Point> ClipPolygon_WeilerAtherton_Rect(const std::vector<Point>& poly, const RECT& r);
 
 // 对所有图形执行裁剪
