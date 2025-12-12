@@ -2,12 +2,14 @@
 #include <windowsx.h>
 
 #include "GraphicsEngine.h"
+#include "Resource.h"
 
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
-static void CreateMenuSystem(HWND hwnd);
+static void UpdateMenu(HWND hwnd);
 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
     WNDCLASS wc{};
+    wc.style = CS_HREDRAW | CS_VREDRAW | CS_DBLCLKS;
     wc.lpfnWndProc = WndProc;
     wc.hInstance = hInstance;
     wc.lpszClassName = L"ComputerGraphicsLab";
@@ -35,7 +37,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
         return 0;
     }
 
-    CreateMenuSystem(hwnd);
+    UpdateMenu(hwnd);
     ShowWindow(hwnd, nCmdShow);
     UpdateWindow(hwnd);
 
@@ -56,10 +58,23 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     case WM_COMMAND: {
         int id = LOWORD(wParam);
         GraphicsEngine::HandleCommand(id);
+        if (id == ID_MODE_SWITCH) {
+            UpdateMenu(hwnd);
+        }
     } return 0;
 
     case WM_LBUTTONDOWN:
         GraphicsEngine::HandleLButtonDown(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam));
+        return 0;
+
+    case WM_LBUTTONDBLCLK:
+        if (GraphicsEngine::is3DMode && GraphicsEngine::selectedObject) {
+            if (GetKeyState(VK_CONTROL) & 0x8000) {
+                DialogBox(GetModuleHandle(NULL), MAKEINTRESOURCE(IDD_MATERIAL_DIALOG), hwnd, GraphicsEngine::MaterialDlgProc);
+            } else {
+                DialogBox(GetModuleHandle(NULL), MAKEINTRESOURCE(IDD_TRANSFORM_DIALOG), hwnd, GraphicsEngine::TransformDlgProc);
+            }
+        }
         return 0;
 
     case WM_MOUSEMOVE:
@@ -91,44 +106,69 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     }
 }
 
-static void CreateMenuSystem(HWND hwnd) {
+static void UpdateMenu(HWND hwnd) {
     HMENU hMenu = CreateMenu();
-    HMENU hDrawMenu = CreateMenu();
-    HMENU hFillMenu = CreateMenu();
-    HMENU hEditMenu = CreateMenu();
-    HMENU hTransMenu = CreateMenu();
-    HMENU hClipLineMenu = CreateMenu();
-    HMENU hClipPolyMenu = CreateMenu();
 
-    AppendMenuW(hDrawMenu, MF_STRING, GraphicsEngine::ID_DRAW_LINE_MIDPOINT, L"直线 (中点法)");
-    AppendMenuW(hDrawMenu, MF_STRING, GraphicsEngine::ID_DRAW_LINE_BRESENHAM, L"直线 (Bresenham)");
-    AppendMenuW(hDrawMenu, MF_STRING, GraphicsEngine::ID_DRAW_CIRCLE_MIDPOINT, L"圆 (中点法)");
-    AppendMenuW(hDrawMenu, MF_STRING, GraphicsEngine::ID_DRAW_CIRCLE_BRESENHAM, L"圆 (Bresenham)");
-    AppendMenuW(hDrawMenu, MF_STRING, GraphicsEngine::ID_DRAW_RECTANGLE, L"矩形");
-    AppendMenuW(hDrawMenu, MF_STRING, GraphicsEngine::ID_DRAW_POLYGON, L"多边形");
-    AppendMenuW(hDrawMenu, MF_STRING, GraphicsEngine::ID_DRAW_BSPLINE, L"B样条曲线");
-    AppendMenuW(hMenu, MF_POPUP, reinterpret_cast<UINT_PTR>(hDrawMenu), L"绘图");
+    if (GraphicsEngine::is3DMode) {
+        HMENU h3DMenu = CreateMenu();
+        AppendMenuW(h3DMenu, MF_STRING, ID_3D_SPHERE, L"绘制球体");
+        AppendMenuW(h3DMenu, MF_STRING, ID_3D_CUBE, L"绘制六面体");
+        AppendMenuW(h3DMenu, MF_STRING, ID_3D_CYLINDER, L"绘制柱体");
+        AppendMenuW(h3DMenu, MF_STRING, ID_3D_PLANE, L"绘制平面");
+        AppendMenuW(hMenu, MF_POPUP, reinterpret_cast<UINT_PTR>(h3DMenu), L"3D 图元");
 
-    AppendMenuW(hFillMenu, MF_STRING, GraphicsEngine::ID_FILL_SCANLINE, L"扫描线填充");
-    AppendMenuW(hFillMenu, MF_STRING, GraphicsEngine::ID_FILL_FENCE, L"栅栏填充");
-    AppendMenuW(hMenu, MF_POPUP, reinterpret_cast<UINT_PTR>(hFillMenu), L"填充");
+        HMENU hSettingsMenu = CreateMenu();
+        AppendMenuW(hSettingsMenu, MF_STRING, ID_3D_LIGHT_SETTINGS, L"光源设置");
+        AppendMenuW(hMenu, MF_POPUP, reinterpret_cast<UINT_PTR>(hSettingsMenu), L"场景设置");
 
-    AppendMenuW(hTransMenu, MF_STRING, GraphicsEngine::ID_TRANS_TRANSLATE, L"平移");
-    AppendMenuW(hTransMenu, MF_STRING, GraphicsEngine::ID_TRANS_SCALE, L"缩放 (滚轮)");
-    AppendMenuW(hTransMenu, MF_STRING, GraphicsEngine::ID_TRANS_ROTATE, L"旋转");
-    AppendMenuW(hMenu, MF_POPUP, reinterpret_cast<UINT_PTR>(hTransMenu), L"变换"); 
+        HMENU hSystemMenu = CreateMenu();
+        AppendMenuW(hSystemMenu, MF_STRING, ID_MODE_SWITCH, L"返回 2D 模式");
+        AppendMenuW(hMenu, MF_POPUP, reinterpret_cast<UINT_PTR>(hSystemMenu), L"系统");
+    } else {
+        HMENU hDrawMenu = CreateMenu();
+        HMENU hFillMenu = CreateMenu();
+        HMENU hEditMenu = CreateMenu();
+        HMENU hTransMenu = CreateMenu();
+        HMENU hClipLineMenu = CreateMenu();
+        HMENU hClipPolyMenu = CreateMenu();
 
-    AppendMenuW(hClipLineMenu, MF_STRING, GraphicsEngine::ID_CLIP_LINE_CS, L"Cohen-Sutherland");
-    AppendMenuW(hClipLineMenu, MF_STRING, GraphicsEngine::ID_CLIP_LINE_MID, L"中点分割");
-    AppendMenuW(hMenu, MF_POPUP, reinterpret_cast<UINT_PTR>(hClipLineMenu), L"线段裁剪");
+        AppendMenuW(hDrawMenu, MF_STRING, GraphicsEngine::ID_DRAW_LINE_MIDPOINT, L"直线 (中点法)");
+        AppendMenuW(hDrawMenu, MF_STRING, GraphicsEngine::ID_DRAW_LINE_BRESENHAM, L"直线 (Bresenham)");
+        AppendMenuW(hDrawMenu, MF_STRING, GraphicsEngine::ID_DRAW_CIRCLE_MIDPOINT, L"圆 (中点法)");
+        AppendMenuW(hDrawMenu, MF_STRING, GraphicsEngine::ID_DRAW_CIRCLE_BRESENHAM, L"圆 (Bresenham)");
+        AppendMenuW(hDrawMenu, MF_STRING, GraphicsEngine::ID_DRAW_RECTANGLE, L"矩形");
+        AppendMenuW(hDrawMenu, MF_STRING, GraphicsEngine::ID_DRAW_POLYGON, L"多边形");
+        AppendMenuW(hDrawMenu, MF_STRING, GraphicsEngine::ID_DRAW_BSPLINE, L"B样条曲线");
+        AppendMenuW(hMenu, MF_POPUP, reinterpret_cast<UINT_PTR>(hDrawMenu), L"绘图");
 
-    AppendMenuW(hClipPolyMenu, MF_STRING, GraphicsEngine::ID_CLIP_POLY_SH, L"Sutherland-Hodgman");
-    AppendMenuW(hClipPolyMenu, MF_STRING, GraphicsEngine::ID_CLIP_POLY_WA, L"Weiler-Atherton");
-    AppendMenuW(hMenu, MF_POPUP, reinterpret_cast<UINT_PTR>(hClipPolyMenu), L"多边形裁剪");
+        AppendMenuW(hFillMenu, MF_STRING, GraphicsEngine::ID_FILL_SCANLINE, L"扫描线填充");
+        AppendMenuW(hFillMenu, MF_STRING, GraphicsEngine::ID_FILL_FENCE, L"栅栏填充");
+        AppendMenuW(hMenu, MF_POPUP, reinterpret_cast<UINT_PTR>(hFillMenu), L"填充");
 
-    AppendMenuW(hEditMenu, MF_STRING, GraphicsEngine::ID_EDIT_FINISH, L"完成当前图形");
-    AppendMenuW(hEditMenu, MF_STRING, GraphicsEngine::ID_EDIT_CLEAR, L"清空画布");
-    AppendMenuW(hMenu, MF_POPUP, reinterpret_cast<UINT_PTR>(hEditMenu), L"编辑");
+        AppendMenuW(hTransMenu, MF_STRING, GraphicsEngine::ID_TRANS_TRANSLATE, L"平移");
+        AppendMenuW(hTransMenu, MF_STRING, GraphicsEngine::ID_TRANS_SCALE, L"缩放 (滚轮)");
+        AppendMenuW(hTransMenu, MF_STRING, GraphicsEngine::ID_TRANS_ROTATE, L"旋转");
+        AppendMenuW(hMenu, MF_POPUP, reinterpret_cast<UINT_PTR>(hTransMenu), L"变换"); 
 
+        AppendMenuW(hClipLineMenu, MF_STRING, GraphicsEngine::ID_CLIP_LINE_CS, L"Cohen-Sutherland");
+        AppendMenuW(hClipLineMenu, MF_STRING, GraphicsEngine::ID_CLIP_LINE_MID, L"中点分割");
+        AppendMenuW(hMenu, MF_POPUP, reinterpret_cast<UINT_PTR>(hClipLineMenu), L"线段裁剪");
+
+        AppendMenuW(hClipPolyMenu, MF_STRING, GraphicsEngine::ID_CLIP_POLY_SH, L"Sutherland-Hodgman");
+        AppendMenuW(hClipPolyMenu, MF_STRING, GraphicsEngine::ID_CLIP_POLY_WA, L"Weiler-Atherton");
+        AppendMenuW(hMenu, MF_POPUP, reinterpret_cast<UINT_PTR>(hClipPolyMenu), L"多边形裁剪");
+
+        AppendMenuW(hEditMenu, MF_STRING, GraphicsEngine::ID_EDIT_FINISH, L"完成当前图形");
+        AppendMenuW(hEditMenu, MF_STRING, GraphicsEngine::ID_EDIT_CLEAR, L"清空画布");
+        AppendMenuW(hMenu, MF_POPUP, reinterpret_cast<UINT_PTR>(hEditMenu), L"编辑");
+
+        HMENU h3DMenu = CreateMenu();
+        AppendMenuW(h3DMenu, MF_STRING, ID_MODE_SWITCH, L"切换到 3D 模式");
+        AppendMenuW(hMenu, MF_POPUP, reinterpret_cast<UINT_PTR>(h3DMenu), L"3D 实验");
+    }
+
+    HMENU hOldMenu = GetMenu(hwnd);
     SetMenu(hwnd, hMenu);
+    if (hOldMenu) DestroyMenu(hOldMenu);
+    DrawMenuBar(hwnd);
 }

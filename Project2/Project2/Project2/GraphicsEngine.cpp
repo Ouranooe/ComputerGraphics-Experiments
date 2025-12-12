@@ -5,6 +5,7 @@
 #include "Fill.h"
 #include "Transform.h"
 #include "Clip.h"
+#include "resource.h"
 
 #include <windowsx.h>
 #include <algorithm>
@@ -12,6 +13,8 @@
 
 #pragma comment(lib, "gdi32.lib")
 #pragma comment(lib, "user32.lib")
+#pragma comment(lib, "opengl32.lib")
+#pragma comment(lib, "glu32.lib")
 
 namespace GraphicsEngine {
 
@@ -34,6 +37,15 @@ double g_scaleBaseDist = 1.0;
 double g_rotBaseAngle = 0.0;
 
 Point g_currentMousePos{ 0, 0 };
+
+// 3D Globals
+bool is3DMode = false;
+HGLRC g_hRC = nullptr;
+std::vector<Object3D> g_objects;
+Object3D* selectedObject = nullptr;
+Camera g_camera = { {0, 5, 10}, {0, 0, 0}, {0, 1, 0} };
+Light g_light = { {5, 10, 5}, {0.2f, 0.2f, 0.2f, 1.0f}, {0.8f, 0.8f, 0.8f, 1.0f}, {1.0f, 1.0f, 1.0f, 1.0f} };
+Point g_lastMousePos = {0, 0};
 
 // ===== Internal helper functions =====
 void RecreateBackBuffer(HWND hwnd) {
@@ -146,6 +158,7 @@ static void RedrawAllShapes(HDC hdc) {
 void Initialize(HWND hwnd) {
     g_hwnd = hwnd;
     RecreateBackBuffer(hwnd);
+    InitGL(hwnd);
 }
 
 void Shutdown() {
@@ -156,6 +169,10 @@ void Shutdown() {
     if (g_hdcMem) {
         DeleteDC(g_hdcMem);
         g_hdcMem = nullptr;
+    }
+    if (g_hRC) {
+        wglDeleteContext(g_hRC);
+        g_hRC = nullptr;
     }
     g_hwnd = nullptr;
     g_shapes.clear();
@@ -171,6 +188,25 @@ void Resize(HWND hwnd) {
 }
 
 void HandleCommand(int commandId) {
+    if (commandId == ID_MODE_SWITCH) {
+        is3DMode = !is3DMode;
+        InvalidateRect(g_hwnd, NULL, TRUE);
+        return;
+    }
+
+    if (is3DMode) {
+        switch (commandId) {
+        case ID_3D_SPHERE: AddObject3D(ModelType::Sphere); break;
+        case ID_3D_CUBE: AddObject3D(ModelType::Cube); break;
+        case ID_3D_CYLINDER: AddObject3D(ModelType::Cylinder); break;
+        case ID_3D_PLANE: AddObject3D(ModelType::Ground); break;
+        case ID_3D_LIGHT_SETTINGS: 
+            DialogBox(GetModuleHandle(NULL), MAKEINTRESOURCE(IDD_LIGHT_DIALOG), g_hwnd, LightDlgProc); 
+            break;
+        }
+        return;
+    }
+
     switch (commandId) {
     case ID_DRAW_LINE_MIDPOINT:
         g_currentMode = DrawMode::DrawLineMidpoint;   g_currentPoints.clear(); g_isDrawing = false; break;
@@ -214,6 +250,12 @@ void HandleCommand(int commandId) {
 }
 
 void HandleLButtonDown(int x, int y) {
+    if (is3DMode) {
+        SelectObject3D(x, y);
+        g_lastMousePos = {x, y};
+        return;
+    }
+
     switch (g_currentMode) {
     case DrawMode::DrawLineMidpoint:
     case DrawMode::DrawLineBresenham:
@@ -392,6 +434,74 @@ static void DrawClipPreviewRect(HDC hdc, const Point& p1, const Point& p2) {
 }
 
 void HandleMouseMove(int x, int y) {
+    if (is3DMode) {
+        if (GetKeyState(VK_LBUTTON) & 0x8000) {
+            float dx = (float)(x - g_lastMousePos.x) * 0.05f;
+            float dy = (float)(y - g_lastMousePos.y) * 0.05f;
+
+            if (selectedObject) {
+                // 计算摄像机坐标系基向量，实现基于视图的移动
+                Vector3 forward = { g_camera.target.x - g_camera.position.x, 
+                                    g_camera.target.y - g_camera.position.y, 
+                                    g_camera.target.z - g_camera.position.z };
+                
+                // 归一化 Forward
+                float len = sqrt(forward.x*forward.x + forward.y*forward.y + forward.z*forward.z);
+                if (len > 1e-6f) { forward.x /= len; forward.y /= len; forward.z /= len; }
+
+                Vector3 worldUp = { 0.0f, 1.0f, 0.0f };
+                
+                // Right = Forward x WorldUp
+                Vector3 right = { forward.y*worldUp.z - forward.z*worldUp.y,
+                                  forward.z*worldUp.x - forward.x*worldUp.z,
+                                  forward.x*worldUp.y - forward.y*worldUp.x };
+                
+                // 归一化 Right
+                len = sqrt(right.x*right.x + right.y*right.y + right.z*right.z);
+                if (len > 1e-6f) { right.x /= len; right.y /= len; right.z /= len; }
+
+                // Up = Right x Forward
+                Vector3 up = { right.y*forward.z - right.z*forward.y,
+                               right.z*forward.x - right.x*forward.z,
+                               right.x*forward.y - right.y*forward.x };
+                
+                // 归一化 Up
+                len = sqrt(up.x*up.x + up.y*up.y + up.z*up.z);
+                if (len > 1e-6f) { up.x /= len; up.y /= len; up.z /= len; }
+
+                // 检查 Shift 键或鼠标右键是否按下
+                bool zMode = (GetAsyncKeyState(VK_SHIFT) & 0x8000) || (GetAsyncKeyState(VK_RBUTTON) & 0x8000);
+
+                if (zMode) {
+                    // Z 模式：沿摄像机观察方向（深度）移动
+                    // 鼠标上下移动控制进出
+                    float speed = 2.0f; 
+                    selectedObject->position.x += forward.x * (-dy * speed);
+                    selectedObject->position.y += forward.y * (-dy * speed);
+                    selectedObject->position.z += forward.z * (-dy * speed);
+                } else {
+                    // 默认模式：在屏幕平面（摄像机 Right/Up 平面）上移动
+                    // 这样无论摄像机角度如何，物体都会跟随鼠标移动
+                    selectedObject->position.x += right.x * dx + up.x * (-dy);
+                    selectedObject->position.y += right.y * dx + up.y * (-dy);
+                    selectedObject->position.z += right.z * dx + up.z * (-dy);
+                }
+            } else {
+                float theta = -dx * 0.5f;
+                float c = cos(theta);
+                float s = sin(theta);
+                float newX = g_camera.position.x * c - g_camera.position.z * s;
+                float newZ = g_camera.position.x * s + g_camera.position.z * c;
+                g_camera.position.x = newX;
+                g_camera.position.z = newZ;
+                g_camera.position.y += dy;
+            }
+            InvalidateRect(g_hwnd, NULL, FALSE);
+        }
+        g_lastMousePos = {x, y};
+        return;
+    }
+
     if (!g_hwnd || !g_hdcMem) return;
     
     g_currentMousePos = { x, y };
@@ -490,6 +600,19 @@ void HandleMouseMove(int x, int y) {
 }
 
 void HandleMouseWheel(short delta) {
+    if (is3DMode) {
+        float d = (float)delta * 0.01f;
+        if (selectedObject) {
+            selectedObject->position.z += d;
+        } else {
+            g_camera.position.x *= (1.0f - d * 0.1f);
+            g_camera.position.y *= (1.0f - d * 0.1f);
+            g_camera.position.z *= (1.0f - d * 0.1f);
+        }
+        InvalidateRect(g_hwnd, NULL, FALSE);
+        return;
+    }
+
     if (g_currentMode == DrawMode::TransformScale &&
         g_selectedShapeIndex >= 0 &&
         g_selectedShapeIndex < (int)g_shapes.size()) {
@@ -503,6 +626,14 @@ void HandleMouseWheel(short delta) {
 }
 
 void OnPaint(HWND hwnd) {
+    if (is3DMode) {
+        PAINTSTRUCT ps;
+        HDC hdc = BeginPaint(hwnd, &ps);
+        DrawScene(hdc);
+        EndPaint(hwnd, &ps);
+        return;
+    }
+
     if (!g_hdcMem) {
         PAINTSTRUCT ps;
         BeginPaint(hwnd, &ps);
@@ -531,6 +662,329 @@ void OnPaint(HWND hwnd) {
 
     BitBlt(hdc, 0, 0, rc.right - rc.left, rc.bottom - rc.top, g_hdcMem, 0, 0, SRCCOPY);
     EndPaint(hwnd, &ps);
+}
+
+// 3D Implementation
+
+void InitGL(HWND hwnd) {
+    PIXELFORMATDESCRIPTOR pfd = {
+        sizeof(PIXELFORMATDESCRIPTOR), 1,
+        PFD_DRAW_TO_WINDOW | PFD_SUPPORT_OPENGL | PFD_DOUBLEBUFFER,
+        PFD_TYPE_RGBA, 32,
+        0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0,
+        24, 8, 0, PFD_MAIN_PLANE,
+        0, 0, 0, 0
+    };
+    HDC hdc = GetDC(hwnd);
+    int format = ChoosePixelFormat(hdc, &pfd);
+    SetPixelFormat(hdc, format, &pfd);
+    g_hRC = wglCreateContext(hdc);
+    ReleaseDC(hwnd, hdc);
+}
+
+void DrawScene(HDC hdc) {
+    if (!g_hRC) return;
+    bool releaseDC = false;
+    if (!hdc) {
+        hdc = GetDC(g_hwnd);
+        releaseDC = true;
+    }
+    wglMakeCurrent(hdc, g_hRC);
+
+    glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    glEnable(GL_DEPTH_TEST);
+    glEnable(GL_LIGHTING);
+    glEnable(GL_LIGHT0);
+    glEnable(GL_NORMALIZE);
+
+    glMatrixMode(GL_PROJECTION);
+    glLoadIdentity();
+    RECT rc; GetClientRect(g_hwnd, &rc);
+    gluPerspective(45.0, (double)(rc.right - rc.left) / (rc.bottom - rc.top), 0.1, 100.0);
+
+    glMatrixMode(GL_MODELVIEW);
+    glLoadIdentity();
+    gluLookAt(g_camera.position.x, g_camera.position.y, g_camera.position.z,
+              g_camera.target.x, g_camera.target.y, g_camera.target.z,
+              g_camera.up.x, g_camera.up.y, g_camera.up.z);
+
+    glLightfv(GL_LIGHT0, GL_POSITION, (float*)&g_light.position);
+    glLightfv(GL_LIGHT0, GL_AMBIENT, g_light.ambient);
+    glLightfv(GL_LIGHT0, GL_DIFFUSE, g_light.diffuse);
+    glLightfv(GL_LIGHT0, GL_SPECULAR, g_light.specular);
+
+    // Draw Axes
+    glDisable(GL_LIGHTING);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glLineWidth(2.0f);
+
+    glBegin(GL_LINES);
+    // X Axis - Red
+    glColor4f(1.0f, 0.0f, 0.0f, 0.5f);
+    glVertex3f(-100.0f, 0.0f, 0.0f);
+    glVertex3f(100.0f, 0.0f, 0.0f);
+
+    // Y Axis - Green
+    glColor4f(0.0f, 1.0f, 0.0f, 0.5f);
+    glVertex3f(0.0f, -100.0f, 0.0f);
+    glVertex3f(0.0f, 100.0f, 0.0f);
+
+    // Z Axis - Blue
+    glColor4f(0.0f, 0.0f, 1.0f, 0.5f);
+    glVertex3f(0.0f, 0.0f, -100.0f);
+    glVertex3f(0.0f, 0.0f, 100.0f);
+    glEnd();
+
+    glDisable(GL_BLEND);
+    glEnable(GL_LIGHTING);
+
+    for (auto& obj : g_objects) {
+        glPushMatrix();
+        glTranslatef(obj.position.x, obj.position.y, obj.position.z);
+        glRotatef(obj.rotation.x, 1, 0, 0);
+        glRotatef(obj.rotation.y, 0, 1, 0);
+        glRotatef(obj.rotation.z, 0, 0, 1);
+        glScalef(obj.scale.x, obj.scale.y, obj.scale.z);
+
+        glMaterialfv(GL_FRONT, GL_AMBIENT, obj.material.ambient);
+        glMaterialfv(GL_FRONT, GL_DIFFUSE, obj.material.diffuse);
+        glMaterialfv(GL_FRONT, GL_SPECULAR, obj.material.specular);
+        glMaterialf(GL_FRONT, GL_SHININESS, obj.material.shininess);
+
+        if (obj.selected) {
+            float emission[] = {0.3f, 0.3f, 0.3f, 1.0f};
+            glMaterialfv(GL_FRONT, GL_EMISSION, emission);
+        } else {
+            float emission[] = {0.0f, 0.0f, 0.0f, 1.0f};
+            glMaterialfv(GL_FRONT, GL_EMISSION, emission);
+        }
+
+        GLUquadric* quad = gluNewQuadric();
+        switch (obj.type) {
+            case ModelType::Sphere: gluSphere(quad, 1.0, 32, 32); break;
+            case ModelType::Cylinder: gluCylinder(quad, 1.0, 1.0, 2.0, 32, 1); break;
+            case ModelType::Cube: {
+                glBegin(GL_QUADS);
+                glNormal3f(0, 0, 1); glVertex3f(-1, -1, 1); glVertex3f(1, -1, 1); glVertex3f(1, 1, 1); glVertex3f(-1, 1, 1);
+                glNormal3f(0, 0, -1); glVertex3f(-1, -1, -1); glVertex3f(-1, 1, -1); glVertex3f(1, 1, -1); glVertex3f(1, -1, -1);
+                glNormal3f(0, 1, 0); glVertex3f(-1, 1, -1); glVertex3f(-1, 1, 1); glVertex3f(1, 1, 1); glVertex3f(1, 1, -1);
+                glNormal3f(0, -1, 0); glVertex3f(-1, -1, -1); glVertex3f(1, -1, -1); glVertex3f(1, -1, 1); glVertex3f(-1, -1, 1);
+                glNormal3f(1, 0, 0); glVertex3f(1, -1, -1); glVertex3f(1, 1, -1); glVertex3f(1, 1, 1); glVertex3f(1, -1, 1);
+                glNormal3f(-1, 0, 0); glVertex3f(-1, -1, -1); glVertex3f(-1, -1, 1); glVertex3f(-1, 1, 1); glVertex3f(-1, 1, -1);
+                glEnd();
+            } break;
+            case ModelType::Ground: {
+                glBegin(GL_QUADS);
+                glNormal3f(0, 1, 0);
+                glVertex3f(-5, 0, -5); glVertex3f(-5, 0, 5); glVertex3f(5, 0, 5); glVertex3f(5, 0, -5);
+                glEnd();
+            } break;
+        }
+        gluDeleteQuadric(quad);
+        glPopMatrix();
+    }
+
+    SwapBuffers(hdc);
+    wglMakeCurrent(NULL, NULL);
+    if (releaseDC) {
+        ReleaseDC(g_hwnd, hdc);
+    }
+}
+
+void AddObject3D(ModelType type) {
+    Object3D obj;
+    obj.type = type;
+    obj.position = {0, 0, 0};
+    obj.rotation = {0, 0, 0};
+    obj.scale = {1, 1, 1};
+    obj.material = {{0.2f, 0.2f, 0.2f, 1.0f}, {0.8f, 0.8f, 0.8f, 1.0f}, {0.0f, 0.0f, 0.0f, 1.0f}, 0.0f};
+    obj.selected = false;
+    g_objects.push_back(obj);
+    if (g_hwnd) InvalidateRect(g_hwnd, NULL, FALSE);
+}
+
+void SelectObject3D(int x, int y) {
+    if (!g_hRC) return;
+    HDC hdc = GetDC(g_hwnd);
+    wglMakeCurrent(hdc, g_hRC);
+
+    GLuint selectBuf[512];
+    glSelectBuffer(512, selectBuf);
+    glRenderMode(GL_SELECT);
+
+    glInitNames();
+    glPushName(0);
+
+    glMatrixMode(GL_PROJECTION);
+    glPushMatrix();
+    glLoadIdentity();
+    RECT rc; GetClientRect(g_hwnd, &rc);
+    GLint viewport[4] = {0, 0, rc.right - rc.left, rc.bottom - rc.top};
+    gluPickMatrix(x, viewport[3] - y, 5, 5, viewport);
+    gluPerspective(45.0, (double)(rc.right - rc.left) / (rc.bottom - rc.top), 0.1, 100.0);
+
+    glMatrixMode(GL_MODELVIEW);
+    glLoadIdentity();
+    gluLookAt(g_camera.position.x, g_camera.position.y, g_camera.position.z,
+              g_camera.target.x, g_camera.target.y, g_camera.target.z,
+              g_camera.up.x, g_camera.up.y, g_camera.up.z);
+
+    for (size_t i = 0; i < g_objects.size(); ++i) {
+        glLoadName(i);
+        glPushMatrix();
+        glTranslatef(g_objects[i].position.x, g_objects[i].position.y, g_objects[i].position.z);
+        glRotatef(g_objects[i].rotation.x, 1, 0, 0);
+        glRotatef(g_objects[i].rotation.y, 0, 1, 0);
+        glRotatef(g_objects[i].rotation.z, 0, 0, 1);
+        glScalef(g_objects[i].scale.x, g_objects[i].scale.y, g_objects[i].scale.z);
+        
+        GLUquadric* quad = gluNewQuadric();
+        switch (g_objects[i].type) {
+            case ModelType::Sphere: gluSphere(quad, 1.0, 8, 8); break;
+            case ModelType::Cylinder: gluCylinder(quad, 1.0, 1.0, 2.0, 8, 1); break;
+            case ModelType::Cube: gluSphere(quad, 1.5, 8, 8); break;
+            case ModelType::Ground: gluSphere(quad, 5.0, 8, 8); break;
+        }
+        gluDeleteQuadric(quad);
+        glPopMatrix();
+    }
+
+    glMatrixMode(GL_PROJECTION);
+    glPopMatrix();
+    glFlush();
+
+    GLint hits = glRenderMode(GL_RENDER);
+    
+    if (selectedObject) selectedObject->selected = false;
+    selectedObject = nullptr;
+
+    if (hits > 0) {
+        GLuint* ptr = (GLuint*)selectBuf;
+        GLuint minZ = 0xffffffff;
+        int index = -1;
+        for (int i = 0; i < hits; i++) {
+            GLuint names = *ptr; ptr++;
+            GLuint z1 = *ptr; ptr++;
+            GLuint z2 = *ptr; ptr++;
+            if (z1 < minZ) {
+                minZ = z1;
+                index = *ptr;
+            }
+            ptr += names;
+        }
+        if (index >= 0 && index < g_objects.size()) {
+            selectedObject = &g_objects[index];
+            selectedObject->selected = true;
+        }
+    }
+
+    wglMakeCurrent(NULL, NULL);
+    ReleaseDC(g_hwnd, hdc);
+    InvalidateRect(g_hwnd, NULL, FALSE);
+}
+
+// Dialog Procedures
+INT_PTR CALLBACK TransformDlgProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam) {
+    using namespace GraphicsEngine;
+    switch (message) {
+    case WM_INITDIALOG:
+        if (selectedObject) {
+            SetDlgItemInt(hDlg, IDC_EDIT_POS_X, (int)selectedObject->position.x, TRUE);
+            SetDlgItemInt(hDlg, IDC_EDIT_POS_Y, (int)selectedObject->position.y, TRUE);
+            SetDlgItemInt(hDlg, IDC_EDIT_POS_Z, (int)selectedObject->position.z, TRUE);
+            SetDlgItemInt(hDlg, IDC_EDIT_ROT_X, (int)selectedObject->rotation.x, TRUE);
+            SetDlgItemInt(hDlg, IDC_EDIT_ROT_Y, (int)selectedObject->rotation.y, TRUE);
+            SetDlgItemInt(hDlg, IDC_EDIT_ROT_Z, (int)selectedObject->rotation.z, TRUE);
+            SetDlgItemInt(hDlg, IDC_EDIT_SCALE_X, (int)(selectedObject->scale.x * 100), TRUE);
+            SetDlgItemInt(hDlg, IDC_EDIT_SCALE_Y, (int)(selectedObject->scale.y * 100), TRUE);
+            SetDlgItemInt(hDlg, IDC_EDIT_SCALE_Z, (int)(selectedObject->scale.z * 100), TRUE);
+        }
+        return (INT_PTR)TRUE;
+    case WM_COMMAND:
+        if (LOWORD(wParam) == IDOK) {
+            if (selectedObject) {
+                selectedObject->position.x = (float)GetDlgItemInt(hDlg, IDC_EDIT_POS_X, NULL, TRUE);
+                selectedObject->position.y = (float)GetDlgItemInt(hDlg, IDC_EDIT_POS_Y, NULL, TRUE);
+                selectedObject->position.z = (float)GetDlgItemInt(hDlg, IDC_EDIT_POS_Z, NULL, TRUE);
+                selectedObject->rotation.x = (float)GetDlgItemInt(hDlg, IDC_EDIT_ROT_X, NULL, TRUE);
+                selectedObject->rotation.y = (float)GetDlgItemInt(hDlg, IDC_EDIT_ROT_Y, NULL, TRUE);
+                selectedObject->rotation.z = (float)GetDlgItemInt(hDlg, IDC_EDIT_ROT_Z, NULL, TRUE);
+                selectedObject->scale.x = (float)GetDlgItemInt(hDlg, IDC_EDIT_SCALE_X, NULL, TRUE) / 100.0f;
+                selectedObject->scale.y = (float)GetDlgItemInt(hDlg, IDC_EDIT_SCALE_Y, NULL, TRUE) / 100.0f;
+                selectedObject->scale.z = (float)GetDlgItemInt(hDlg, IDC_EDIT_SCALE_Z, NULL, TRUE) / 100.0f;
+                InvalidateRect(g_hwnd, NULL, FALSE);
+            }
+            EndDialog(hDlg, LOWORD(wParam));
+            return (INT_PTR)TRUE;
+        } else if (LOWORD(wParam) == IDCANCEL) {
+            EndDialog(hDlg, LOWORD(wParam));
+            return (INT_PTR)TRUE;
+        }
+        break;
+    }
+    return (INT_PTR)FALSE;
+}
+
+INT_PTR CALLBACK LightDlgProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam) {
+    using namespace GraphicsEngine;
+    switch (message) {
+    case WM_INITDIALOG:
+        SetDlgItemInt(hDlg, IDC_EDIT_LIGHT_X, (int)g_light.position.x, TRUE);
+        SetDlgItemInt(hDlg, IDC_EDIT_LIGHT_Y, (int)g_light.position.y, TRUE);
+        SetDlgItemInt(hDlg, IDC_EDIT_LIGHT_Z, (int)g_light.position.z, TRUE);
+        return (INT_PTR)TRUE;
+    case WM_COMMAND:
+        if (LOWORD(wParam) == IDOK) {
+            g_light.position.x = (float)GetDlgItemInt(hDlg, IDC_EDIT_LIGHT_X, NULL, TRUE);
+            g_light.position.y = (float)GetDlgItemInt(hDlg, IDC_EDIT_LIGHT_Y, NULL, TRUE);
+            g_light.position.z = (float)GetDlgItemInt(hDlg, IDC_EDIT_LIGHT_Z, NULL, TRUE);
+            InvalidateRect(g_hwnd, NULL, FALSE);
+            EndDialog(hDlg, LOWORD(wParam));
+            return (INT_PTR)TRUE;
+        } else if (LOWORD(wParam) == IDCANCEL) {
+            EndDialog(hDlg, LOWORD(wParam));
+            return (INT_PTR)TRUE;
+        }
+        break;
+    }
+    return (INT_PTR)FALSE;
+}
+
+INT_PTR CALLBACK MaterialDlgProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam) {
+    using namespace GraphicsEngine;
+    switch (message) {
+    case WM_INITDIALOG:
+        if (selectedObject) {
+            SetDlgItemInt(hDlg, IDC_EDIT_MAT_AMBIENT, (int)(selectedObject->material.ambient[0] * 100), TRUE);
+            SetDlgItemInt(hDlg, IDC_EDIT_MAT_DIFFUSE, (int)(selectedObject->material.diffuse[0] * 100), TRUE);
+            SetDlgItemInt(hDlg, IDC_EDIT_MAT_SPECULAR, (int)(selectedObject->material.specular[0] * 100), TRUE);
+            SetDlgItemInt(hDlg, IDC_EDIT_MAT_SHININESS, (int)selectedObject->material.shininess, TRUE);
+        }
+        return (INT_PTR)TRUE;
+    case WM_COMMAND:
+        if (LOWORD(wParam) == IDOK) {
+            if (selectedObject) {
+                float a = (float)GetDlgItemInt(hDlg, IDC_EDIT_MAT_AMBIENT, NULL, TRUE) / 100.0f;
+                float d = (float)GetDlgItemInt(hDlg, IDC_EDIT_MAT_DIFFUSE, NULL, TRUE) / 100.0f;
+                float s = (float)GetDlgItemInt(hDlg, IDC_EDIT_MAT_SPECULAR, NULL, TRUE) / 100.0f;
+                selectedObject->material.ambient[0] = selectedObject->material.ambient[1] = selectedObject->material.ambient[2] = a;
+                selectedObject->material.diffuse[0] = selectedObject->material.diffuse[1] = selectedObject->material.diffuse[2] = d;
+                selectedObject->material.specular[0] = selectedObject->material.specular[1] = selectedObject->material.specular[2] = s;
+                selectedObject->material.shininess = (float)GetDlgItemInt(hDlg, IDC_EDIT_MAT_SHININESS, NULL, TRUE);
+                InvalidateRect(g_hwnd, NULL, FALSE);
+            }
+            EndDialog(hDlg, LOWORD(wParam));
+            return (INT_PTR)TRUE;
+        } else if (LOWORD(wParam) == IDCANCEL) {
+            EndDialog(hDlg, LOWORD(wParam));
+            return (INT_PTR)TRUE;
+        }
+        break;
+    }
+    return (INT_PTR)FALSE;
 }
 
 } // namespace GraphicsEngine

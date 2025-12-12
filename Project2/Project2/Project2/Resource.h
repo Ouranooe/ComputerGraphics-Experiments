@@ -16,6 +16,40 @@
 #ifndef IDC_STATIC
 #define IDC_STATIC				-1
 #endif
+
+// 3D Mode Commands
+#define ID_MODE_SWITCH          2000
+#define ID_3D_SPHERE            2001
+#define ID_3D_CUBE              2002
+#define ID_3D_CYLINDER          2003
+#define ID_3D_PLANE             2004
+#define ID_3D_LIGHT_SETTINGS    2005
+
+// Dialog IDs
+#define IDD_TRANSFORM_DIALOG    2100
+#define IDD_LIGHT_DIALOG        2101
+#define IDD_MATERIAL_DIALOG     2102
+
+// Control IDs
+#define IDC_EDIT_POS_X          2200
+#define IDC_EDIT_POS_Y          2201
+#define IDC_EDIT_POS_Z          2202
+#define IDC_EDIT_ROT_X          2203
+#define IDC_EDIT_ROT_Y          2204
+#define IDC_EDIT_ROT_Z          2205
+#define IDC_EDIT_SCALE_X        2206
+#define IDC_EDIT_SCALE_Y        2207
+#define IDC_EDIT_SCALE_Z        2208
+
+#define IDC_EDIT_LIGHT_X        2209
+#define IDC_EDIT_LIGHT_Y        2210
+#define IDC_EDIT_LIGHT_Z        2211
+
+#define IDC_EDIT_MAT_AMBIENT    2212
+#define IDC_EDIT_MAT_DIFFUSE    2213
+#define IDC_EDIT_MAT_SPECULAR   2214
+#define IDC_EDIT_MAT_SHININESS  2215
+
 // 新对象的下一组默认值
 //
 #ifdef APSTUDIO_INVOKED
