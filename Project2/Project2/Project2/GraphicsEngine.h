@@ -96,7 +96,12 @@ struct Object3D {
     Vector3 scale;
     Material material;
     bool selected;
-    // Texture ID if needed
+    
+    // Texture support
+    GLuint textureID = 0;
+    bool hasTexture = false;
+    wchar_t texturePath[260] = {0};
+    int textureWrapMode = 0; // 0: Repeat, 1: Clamp
 };
 
 struct Camera {

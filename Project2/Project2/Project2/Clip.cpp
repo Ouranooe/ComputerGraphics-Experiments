@@ -22,7 +22,7 @@ int CS_GetOutCode(double x, double y, double xmin, double xmax, double ymin, dou
     else if (y > ymax) code |= CS_BOTTOM;
     return code;
 }
-
+//Cohen-Sutherland 主算法
 bool CohenSutherlandClip(double& x1, double& y1, double& x2, double& y2,
     double xmin, double xmax, double ymin, double ymax) {
     int out1 = CS_GetOutCode(x1, y1, xmin, xmax, ymin, ymax);
@@ -34,6 +34,7 @@ bool CohenSutherlandClip(double& x1, double& y1, double& x2, double& y2,
         else {
             double x, y;
             int out = out1 ? out1 : out2;
+            //计算交点
             if (out & CS_TOP) {
                 y = ymin;
                 x = x1 + (x2 - x1) * (y - y1) / (y2 - y1);
@@ -62,7 +63,7 @@ bool CohenSutherlandClip(double& x1, double& y1, double& x2, double& y2,
     }
     return accept;
 }
-
+// 真正执行裁剪
 void ClipAllLines_CohenSutherland(const RECT& clip) {
     double xmin = clip.left;
     double xmax = clip.right;
@@ -92,23 +93,25 @@ void ClipAllLines_CohenSutherland(const RECT& clip) {
 }
 
 // ----- 中点分割法 -----
+//判断是否在矩形内
 bool InsideRect(double x, double y, double xmin, double xmax, double ymin, double ymax) {
     return x >= xmin && x <= xmax && y >= ymin && y <= ymax;
 }
-
+// 递归裁剪函数
 void MidClipLineRec(double x1, double y1, double x2, double y2,
     double xmin, double xmax, double ymin, double ymax,
     int depth,
     std::vector<std::pair<Point, Point>>& outSegs) {
     bool in1 = InsideRect(x1, y1, xmin, xmax, ymin, ymax);
     bool in2 = InsideRect(x2, y2, xmin, xmax, ymin, ymax);
-
+    // 全部在矩形内，结束递归
     if (in1 && in2) {
         Point a{ (int)std::round(x1), (int)std::round(y1) };
         Point b{ (int)std::round(x2), (int)std::round(y2) };
         outSegs.push_back({ a, b });
         return;
     }
+    // 深度大于阈值，也结束递归
     if (depth > 20) {
         if (in1 || in2) {
             Point a{ (int)std::round(x1), (int)std::round(y1) };
@@ -124,6 +127,7 @@ void MidClipLineRec(double x1, double y1, double x2, double y2,
         if (in1 && in2) {
             Point a{ (int)std::round(x1), (int)std::round(y1) };
             Point b{ (int)std::round(x2), (int)std::round(y2) };
+            //两端都在内，加入结果内
             outSegs.push_back({ a, b });
         }
         return;
@@ -135,7 +139,7 @@ void MidClipLineRec(double x1, double y1, double x2, double y2,
     MidClipLineRec(x1, y1, mx, my, xmin, xmax, ymin, ymax, depth + 1, outSegs);
     MidClipLineRec(mx, my, x2, y2, xmin, xmax, ymin, ymax, depth + 1, outSegs);
 }
-
+// 真正的裁剪
 void ClipAllLines_Midpoint(const RECT& clip) {
     double xmin = clip.left;
     double xmax = clip.right;
@@ -167,6 +171,7 @@ void ClipAllLines_Midpoint(const RECT& clip) {
 }
 
 // ----- Sutherland-Hodgman 多边形裁剪 -----
+// 计算多边形与边的交点
 Point IntersectEdge(const Point& p1, const Point& p2, char edge, const RECT& r) {
     double x1 = p1.x, y1 = p1.y;
     double x2 = p2.x, y2 = p2.y;
@@ -179,7 +184,7 @@ Point IntersectEdge(const Point& p1, const Point& p2, char edge, const RECT& r) 
     }
     return { (int)std::round(x), (int)std::round(y) };
 }
-
+// 判断点是否在指定边的内侧
 bool InsideEdge(const Point& p, char edge, const RECT& r) {
     switch (edge) {
     case 'L': return p.x >= r.left;
@@ -189,22 +194,22 @@ bool InsideEdge(const Point& p, char edge, const RECT& r) {
     }
     return false;
 }
-
+// 对多边形进行单边裁剪
 std::vector<Point> ClipWithEdge(const std::vector<Point>& poly, char edge, const RECT& r) {
     std::vector<Point> out;
     if (poly.empty()) return out;
-    Point S = poly.back();
+    Point S = poly.back();// 上一个顶点，初始为最后一个顶点
     for (auto& E : poly) {
         bool Sin = InsideEdge(S, edge, r);
         bool Ein = InsideEdge(E, edge, r);
-        if (Sin && Ein) {
+        if (Sin && Ein) { // 两点都在内侧
             out.push_back(E);
         }
-        else if (Sin && !Ein) {
+        else if (Sin && !Ein) {// S在内侧，E在外侧
             Point I = IntersectEdge(S, E, edge, r);
             out.push_back(I);
         }
-        else if (!Sin && Ein) {
+        else if (!Sin && Ein) {// S在外侧，E在内侧
             Point I = IntersectEdge(S, E, edge, r);
             out.push_back(I);
             out.push_back(E);
@@ -223,113 +228,12 @@ std::vector<Point> ClipPolygon_SutherlandHodgman(const std::vector<Point>& poly,
     return out;
 }
 
-// 判断点是否在裁剪边界上
-static bool SH_PointOnBoundary(const Point& p, const RECT& r) {
-    return p.x == r.left || p.x == r.right || p.y == r.top || p.y == r.bottom;
-}
-
-// 获取点所在的边界（0=左，1=右，2=上，3=下，-1=不在边界）
-static int SH_GetBoundaryId(const Point& p, const RECT& r) {
-    if (p.x == r.left) return 0;
-    if (p.x == r.right) return 1;
-    if (p.y == r.top) return 2;
-    if (p.y == r.bottom) return 3;
-    return -1;
-}
-
-// 判断两点是否在同一裁剪边界上
-static bool SH_OnSameBoundary(const Point& p1, const Point& p2, const RECT& r) {
-    int b1 = SH_GetBoundaryId(p1, r);
-    int b2 = SH_GetBoundaryId(p2, r);
-    return b1 >= 0 && b1 == b2;
-}
-
-// 判断边是否是"桥接边"（连接两个独立区域的边界边）
-// 桥接边的特征：两端点都在同一边界上，且这条边沿着边界方向移动
-static bool SH_IsBridgeEdge(const Point& p1, const Point& p2, const RECT& r) {
-    if (!SH_PointOnBoundary(p1, r) || !SH_PointOnBoundary(p2, r)) return false;
-    if (!SH_OnSameBoundary(p1, p2, r)) return false;
-    // 两点相同不算桥接边
-    if (p1.x == p2.x && p1.y == p2.y) return false;
-    return true;
-}
-
-// 将Sutherland-Hodgman裁剪结果分离成多个多边形
-std::vector<std::vector<Point>> SplitSHResult(const std::vector<Point>& poly, const RECT& r) {
-    std::vector<std::vector<Point>> results;
-    
-    if (poly.size() < 3) return results;
-    
-    size_t n = poly.size();
-    
-    // 首先检测所有桥接边的位置
-    std::vector<bool> isBridge(n, false);
-    int bridgeCount = 0;
-    
-    for (size_t i = 0; i < n; i++) {
-        const Point& p1 = poly[i];
-        const Point& p2 = poly[(i + 1) % n];
-        if (SH_IsBridgeEdge(p1, p2, r)) {
-            isBridge[i] = true;
-            bridgeCount++;
-        }
-    }
-    
-    // 如果没有桥接边，返回原多边形
-    if (bridgeCount == 0) {
-        results.push_back(poly);
-        return results;
-    }
-    
-    // 桥接边应该成对出现，每对桥接边分隔一个独立的多边形
-    // 从非桥接边的起点开始，收集顶点直到遇到桥接边
-    
-    std::vector<bool> visited(n, false);
-    
-    for (size_t start = 0; start < n; start++) {
-        // 寻找一个未访问的、前一条边是桥接边的顶点作为新多边形的起点
-        size_t prevEdge = (start + n - 1) % n;
-        if (visited[start]) continue;
-        if (!isBridge[prevEdge]) continue;  // 起点应该在桥接边之后
-        
-        std::vector<Point> currentPoly;
-        size_t idx = start;
-        
-        // 收集顶点直到再次遇到桥接边
-        do {
-            if (!visited[idx]) {
-                currentPoly.push_back(poly[idx]);
-                visited[idx] = true;
-            }
-            
-            // 检查当前边是否是桥接边
-            if (isBridge[idx]) {
-                // 遇到桥接边，当前多边形结束
-                break;
-            }
-            
-            idx = (idx + 1) % n;
-        } while (idx != start);
-        
-        if (currentPoly.size() >= 3) {
-            results.push_back(currentPoly);
-        }
-    }
-    
-    // 处理可能遗漏的情况：如果没有桥接边作为起点
-    if (results.empty()) {
-        // 使用原来的简单方法：直接返回原多边形
-        results.push_back(poly);
-    }
-    
-    return results;
-}
-
 // Sutherland-Hodgman 裁剪并返回多个多边形
 std::vector<std::vector<Point>> ClipPolygon_SutherlandHodgman_Multi(const std::vector<Point>& poly, const RECT& r) {
     std::vector<Point> clipped = ClipPolygon_SutherlandHodgman(poly, r);
     if (clipped.size() < 3) return {};
-    return SplitSHResult(clipped, r);
+    // 直接返回结果，不处理桥接边问题
+    return { clipped };
 }
 
 // ============== Weiler-Atherton 完整实现 ==============
@@ -358,7 +262,7 @@ static bool WA_PointInRect(double x, double y, const RECT& r) {
 static bool WA_LineIntersect(double x1, double y1, double x2, double y2,
                               double x3, double y3, double x4, double y4,
                               double& ix, double& iy, double& t1, double& t2) {
-    double denom = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4);
+    double denom = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4); // 分母
     if (std::abs(denom) < 1e-10) return false;
     
     t1 = ((x1 - x3) * (y3 - y4) - (y1 - y3) * (x3 - x4)) / denom;
@@ -644,10 +548,10 @@ std::vector<Point> ClipPolygon_WeilerAtherton_Rect(const std::vector<Point>& pol
 // 将矩形转换为4个顶点的多边形
 static std::vector<Point> RectToPolygon(const std::vector<Point>& v) {
     if (v.size() < 2) return {};
-    int x1 = min(v[0].x, v[1].x);
-    int x2 = max(v[0].x, v[1].x);
-    int y1 = min(v[0].y, v[1].y);
-    int y2 = max(v[0].y, v[1].y);
+    int x1 = (std::min)(v[0].x, v[1].x);
+    int x2 = (std::max)(v[0].x, v[1].x);
+    int y1 = (std::min)(v[0].y, v[1].y);
+    int y2 = (std::max)(v[0].y, v[1].y);
     return {{x1, y1}, {x2, y1}, {x2, y2}, {x1, y2}};
 }
 

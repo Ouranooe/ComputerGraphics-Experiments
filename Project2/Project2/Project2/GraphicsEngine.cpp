@@ -8,6 +8,7 @@
 #include "resource.h"
 
 #include <windowsx.h>
+#include <commdlg.h>
 #include <algorithm>
 #include <cmath>
 
@@ -202,6 +203,18 @@ void HandleCommand(int commandId) {
         case ID_3D_PLANE: AddObject3D(ModelType::Ground); break;
         case ID_3D_LIGHT_SETTINGS: 
             DialogBox(GetModuleHandle(NULL), MAKEINTRESOURCE(IDD_LIGHT_DIALOG), g_hwnd, LightDlgProc); 
+            break;
+        case ID_3D_EDIT_TRANSFORM:
+            if (selectedObject)
+                DialogBox(GetModuleHandle(NULL), MAKEINTRESOURCE(IDD_TRANSFORM_DIALOG), g_hwnd, TransformDlgProc);
+            else
+                MessageBox(g_hwnd, L"\u8BF7\u5148\u9009\u62E9\u4E00\u4E2A\u7269\u4F53", L"\u63D0\u793A", MB_OK | MB_ICONINFORMATION);
+            break;
+        case ID_3D_EDIT_MATERIAL:
+            if (selectedObject)
+                DialogBox(GetModuleHandle(NULL), MAKEINTRESOURCE(IDD_MATERIAL_DIALOG), g_hwnd, MaterialDlgProc);
+            else
+                MessageBox(g_hwnd, L"\u8BF7\u5148\u9009\u62E9\u4E00\u4E2A\u7269\u4F53", L"\u63D0\u793A", MB_OK | MB_ICONINFORMATION);
             break;
         }
         return;
@@ -440,52 +453,9 @@ void HandleMouseMove(int x, int y) {
             float dy = (float)(y - g_lastMousePos.y) * 0.05f;
 
             if (selectedObject) {
-                // 计算摄像机坐标系基向量，实现基于视图的移动
-                Vector3 forward = { g_camera.target.x - g_camera.position.x, 
-                                    g_camera.target.y - g_camera.position.y, 
-                                    g_camera.target.z - g_camera.position.z };
-                
-                // 归一化 Forward
-                float len = sqrt(forward.x*forward.x + forward.y*forward.y + forward.z*forward.z);
-                if (len > 1e-6f) { forward.x /= len; forward.y /= len; forward.z /= len; }
-
-                Vector3 worldUp = { 0.0f, 1.0f, 0.0f };
-                
-                // Right = Forward x WorldUp
-                Vector3 right = { forward.y*worldUp.z - forward.z*worldUp.y,
-                                  forward.z*worldUp.x - forward.x*worldUp.z,
-                                  forward.x*worldUp.y - forward.y*worldUp.x };
-                
-                // 归一化 Right
-                len = sqrt(right.x*right.x + right.y*right.y + right.z*right.z);
-                if (len > 1e-6f) { right.x /= len; right.y /= len; right.z /= len; }
-
-                // Up = Right x Forward
-                Vector3 up = { right.y*forward.z - right.z*forward.y,
-                               right.z*forward.x - right.x*forward.z,
-                               right.x*forward.y - right.y*forward.x };
-                
-                // 归一化 Up
-                len = sqrt(up.x*up.x + up.y*up.y + up.z*up.z);
-                if (len > 1e-6f) { up.x /= len; up.y /= len; up.z /= len; }
-
-                // 检查 Shift 键或鼠标右键是否按下
-                bool zMode = (GetAsyncKeyState(VK_SHIFT) & 0x8000) || (GetAsyncKeyState(VK_RBUTTON) & 0x8000);
-
-                if (zMode) {
-                    // Z 模式：沿摄像机观察方向（深度）移动
-                    // 鼠标上下移动控制进出
-                    float speed = 2.0f; 
-                    selectedObject->position.x += forward.x * (-dy * speed);
-                    selectedObject->position.y += forward.y * (-dy * speed);
-                    selectedObject->position.z += forward.z * (-dy * speed);
-                } else {
-                    // 默认模式：在屏幕平面（摄像机 Right/Up 平面）上移动
-                    // 这样无论摄像机角度如何，物体都会跟随鼠标移动
-                    selectedObject->position.x += right.x * dx + up.x * (-dy);
-                    selectedObject->position.y += right.y * dx + up.y * (-dy);
-                    selectedObject->position.z += right.z * dx + up.z * (-dy);
-                }
+                // 恢复为世界坐标系 X-Y 平面移动 (红绿轴)
+                selectedObject->position.x += dx;
+                selectedObject->position.y -= dy;
             } else {
                 float theta = -dx * 0.5f;
                 float c = cos(theta);
@@ -664,8 +634,9 @@ void OnPaint(HWND hwnd) {
     EndPaint(hwnd, &ps);
 }
 
-// 3D Implementation
+//-------------三维实验相关代码----------------
 
+// 初始化OpenGL上下文
 void InitGL(HWND hwnd) {
     PIXELFORMATDESCRIPTOR pfd = {
         sizeof(PIXELFORMATDESCRIPTOR), 1,
@@ -683,6 +654,35 @@ void InitGL(HWND hwnd) {
     ReleaseDC(hwnd, hdc);
 }
 
+GLuint LoadTexture(const wchar_t* filename) {
+    HBITMAP hBmp = (HBITMAP)LoadImageW(NULL, filename, IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+    if (!hBmp) return 0;
+
+    BITMAP bm;
+    GetObject(hBmp, sizeof(bm), &bm);
+
+    GLuint texID;
+    glGenTextures(1, &texID);
+    glBindTexture(GL_TEXTURE_2D, texID);
+
+    int bpp = bm.bmBitsPixel;
+    GLenum format = GL_BGR_EXT;
+    if (bpp == 32) format = GL_BGRA_EXT;
+    else if (bpp == 24) format = GL_BGR_EXT;
+    else if (bpp == 8) format = GL_LUMINANCE; // Simple fallback
+
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, bm.bmWidth, bm.bmHeight, 0, format, GL_UNSIGNED_BYTE, bm.bmBits);
+
+    DeleteObject(hBmp);
+    return texID;
+}
+
+// 绘制三维场景
 void DrawScene(HDC hdc) {
     if (!g_hRC) return;
     bool releaseDC = false;
@@ -715,24 +715,24 @@ void DrawScene(HDC hdc) {
     glLightfv(GL_LIGHT0, GL_DIFFUSE, g_light.diffuse);
     glLightfv(GL_LIGHT0, GL_SPECULAR, g_light.specular);
 
-    // Draw Axes
+    //  绘制坐标轴
     glDisable(GL_LIGHTING);
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     glLineWidth(2.0f);
 
     glBegin(GL_LINES);
-    // X Axis - Red
+    // 坐标轴 - X 轴 红色
     glColor4f(1.0f, 0.0f, 0.0f, 0.5f);
     glVertex3f(-100.0f, 0.0f, 0.0f);
     glVertex3f(100.0f, 0.0f, 0.0f);
 
-    // Y Axis - Green
+    // Y轴 绿色
     glColor4f(0.0f, 1.0f, 0.0f, 0.5f);
     glVertex3f(0.0f, -100.0f, 0.0f);
     glVertex3f(0.0f, 100.0f, 0.0f);
 
-    // Z Axis - Blue
+    // Z轴 蓝色
     glColor4f(0.0f, 0.0f, 1.0f, 0.5f);
     glVertex3f(0.0f, 0.0f, -100.0f);
     glVertex3f(0.0f, 0.0f, 100.0f);
@@ -740,17 +740,17 @@ void DrawScene(HDC hdc) {
 
     glDisable(GL_BLEND);
     glEnable(GL_LIGHTING);
-
+    // 绘制三维对象
     for (auto& obj : g_objects) {
-        glPushMatrix();
-        glTranslatef(obj.position.x, obj.position.y, obj.position.z);
-        glRotatef(obj.rotation.x, 1, 0, 0);
+        glPushMatrix(); // 保存当前矩阵状态
+        glTranslatef(obj.position.x, obj.position.y, obj.position.z); // 平移到对象位置
+        glRotatef(obj.rotation.x, 1, 0, 0); // 旋转
         glRotatef(obj.rotation.y, 0, 1, 0);
         glRotatef(obj.rotation.z, 0, 0, 1);
-        glScalef(obj.scale.x, obj.scale.y, obj.scale.z);
+        glScalef(obj.scale.x, obj.scale.y, obj.scale.z);   // 缩放
 
-        glMaterialfv(GL_FRONT, GL_AMBIENT, obj.material.ambient);
-        glMaterialfv(GL_FRONT, GL_DIFFUSE, obj.material.diffuse);
+        glMaterialfv(GL_FRONT, GL_AMBIENT, obj.material.ambient);   // 设置材质属性
+        glMaterialfv(GL_FRONT, GL_DIFFUSE, obj.material.diffuse);   // 设置材质属性
         glMaterialfv(GL_FRONT, GL_SPECULAR, obj.material.specular);
         glMaterialf(GL_FRONT, GL_SHININESS, obj.material.shininess);
 
@@ -762,24 +762,47 @@ void DrawScene(HDC hdc) {
             glMaterialfv(GL_FRONT, GL_EMISSION, emission);
         }
 
+        if (obj.hasTexture && obj.textureID) {
+            glEnable(GL_TEXTURE_2D);
+            glBindTexture(GL_TEXTURE_2D, obj.textureID);
+            GLint wrap = (obj.textureWrapMode == 0) ? GL_REPEAT : GL_CLAMP;
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, wrap);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, wrap);
+        } else {
+            glDisable(GL_TEXTURE_2D);
+        }
+
         GLUquadric* quad = gluNewQuadric();
+        if (obj.hasTexture && obj.textureID) {
+            gluQuadricTexture(quad, GL_TRUE);
+        }
+
         switch (obj.type) {
             case ModelType::Sphere: gluSphere(quad, 1.0, 32, 32); break;
             case ModelType::Cylinder: gluCylinder(quad, 1.0, 1.0, 2.0, 32, 1); break;
             case ModelType::Cube: {
                 glBegin(GL_QUADS);
-                glNormal3f(0, 0, 1); glVertex3f(-1, -1, 1); glVertex3f(1, -1, 1); glVertex3f(1, 1, 1); glVertex3f(-1, 1, 1);
-                glNormal3f(0, 0, -1); glVertex3f(-1, -1, -1); glVertex3f(-1, 1, -1); glVertex3f(1, 1, -1); glVertex3f(1, -1, -1);
-                glNormal3f(0, 1, 0); glVertex3f(-1, 1, -1); glVertex3f(-1, 1, 1); glVertex3f(1, 1, 1); glVertex3f(1, 1, -1);
-                glNormal3f(0, -1, 0); glVertex3f(-1, -1, -1); glVertex3f(1, -1, -1); glVertex3f(1, -1, 1); glVertex3f(-1, -1, 1);
-                glNormal3f(1, 0, 0); glVertex3f(1, -1, -1); glVertex3f(1, 1, -1); glVertex3f(1, 1, 1); glVertex3f(1, -1, 1);
-                glNormal3f(-1, 0, 0); glVertex3f(-1, -1, -1); glVertex3f(-1, -1, 1); glVertex3f(-1, 1, 1); glVertex3f(-1, 1, -1);
+                // Front Face
+                glNormal3f(0, 0, 1); glTexCoord2f(0.0f, 0.0f); glVertex3f(-1, -1, 1); glTexCoord2f(1.0f, 0.0f); glVertex3f(1, -1, 1); glTexCoord2f(1.0f, 1.0f); glVertex3f(1, 1, 1); glTexCoord2f(0.0f, 1.0f); glVertex3f(-1, 1, 1);
+                // Back Face
+                glNormal3f(0, 0, -1); glTexCoord2f(1.0f, 0.0f); glVertex3f(-1, -1, -1); glTexCoord2f(1.0f, 1.0f); glVertex3f(-1, 1, -1); glTexCoord2f(0.0f, 1.0f); glVertex3f(1, 1, -1); glTexCoord2f(0.0f, 0.0f); glVertex3f(1, -1, -1);
+                // Top Face
+                glNormal3f(0, 1, 0); glTexCoord2f(0.0f, 1.0f); glVertex3f(-1, 1, -1); glTexCoord2f(0.0f, 0.0f); glVertex3f(-1, 1, 1); glTexCoord2f(1.0f, 0.0f); glVertex3f(1, 1, 1); glTexCoord2f(1.0f, 1.0f); glVertex3f(1, 1, -1);
+                // Bottom Face
+                glNormal3f(0, -1, 0); glTexCoord2f(1.0f, 1.0f); glVertex3f(-1, -1, -1); glTexCoord2f(0.0f, 1.0f); glVertex3f(1, -1, -1); glTexCoord2f(0.0f, 0.0f); glVertex3f(1, -1, 1); glTexCoord2f(1.0f, 0.0f); glVertex3f(-1, -1, 1);
+                // Right Face
+                glNormal3f(1, 0, 0); glTexCoord2f(1.0f, 0.0f); glVertex3f(1, -1, -1); glTexCoord2f(1.0f, 1.0f); glVertex3f(1, 1, -1); glTexCoord2f(0.0f, 1.0f); glVertex3f(1, 1, 1); glTexCoord2f(0.0f, 0.0f); glVertex3f(1, -1, 1);
+                // Left Face
+                glNormal3f(-1, 0, 0); glTexCoord2f(0.0f, 0.0f); glVertex3f(-1, -1, -1); glTexCoord2f(1.0f, 0.0f); glVertex3f(-1, -1, 1); glTexCoord2f(1.0f, 1.0f); glVertex3f(-1, 1, 1); glTexCoord2f(0.0f, 1.0f); glVertex3f(-1, 1, -1);
                 glEnd();
             } break;
             case ModelType::Ground: {
                 glBegin(GL_QUADS);
                 glNormal3f(0, 1, 0);
-                glVertex3f(-5, 0, -5); glVertex3f(-5, 0, 5); glVertex3f(5, 0, 5); glVertex3f(5, 0, -5);
+                glTexCoord2f(0.0f, 0.0f); glVertex3f(-5, 0, -5); 
+                glTexCoord2f(0.0f, 1.0f); glVertex3f(-5, 0, 5); 
+                glTexCoord2f(1.0f, 1.0f); glVertex3f(5, 0, 5); 
+                glTexCoord2f(1.0f, 0.0f); glVertex3f(5, 0, -5);
                 glEnd();
             } break;
         }
@@ -833,7 +856,7 @@ void SelectObject3D(int x, int y) {
               g_camera.up.x, g_camera.up.y, g_camera.up.z);
 
     for (size_t i = 0; i < g_objects.size(); ++i) {
-        glLoadName(i);
+        glLoadName((GLuint)i);
         glPushMatrix();
         glTranslatef(g_objects[i].position.x, g_objects[i].position.y, g_objects[i].position.z);
         glRotatef(g_objects[i].rotation.x, 1, 0, 0);
@@ -955,6 +978,8 @@ INT_PTR CALLBACK LightDlgProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lPa
 
 INT_PTR CALLBACK MaterialDlgProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam) {
     using namespace GraphicsEngine;
+    static wchar_t tempTexturePath[260];
+
     switch (message) {
     case WM_INITDIALOG:
         if (selectedObject) {
@@ -962,10 +987,41 @@ INT_PTR CALLBACK MaterialDlgProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM 
             SetDlgItemInt(hDlg, IDC_EDIT_MAT_DIFFUSE, (int)(selectedObject->material.diffuse[0] * 100), TRUE);
             SetDlgItemInt(hDlg, IDC_EDIT_MAT_SPECULAR, (int)(selectedObject->material.specular[0] * 100), TRUE);
             SetDlgItemInt(hDlg, IDC_EDIT_MAT_SHININESS, (int)selectedObject->material.shininess, TRUE);
+
+            // Texture Init
+            CheckDlgButton(hDlg, IDC_CHECK_TEXTURE, selectedObject->hasTexture ? BST_CHECKED : BST_UNCHECKED);
+            wcscpy_s(tempTexturePath, selectedObject->texturePath);
+            SetDlgItemTextW(hDlg, IDC_STATIC_TEXTURE_PATH, tempTexturePath[0] ? tempTexturePath : L"\u65E0");
+            
+            HWND hCombo = GetDlgItem(hDlg, IDC_COMBO_TEXTURE_WRAP);
+            SendMessage(hCombo, CB_ADDSTRING, 0, (LPARAM)L"\u91CD\u590D (Repeat)");
+            SendMessage(hCombo, CB_ADDSTRING, 0, (LPARAM)L"\u622A\u65AD (Clamp)");
+            SendMessage(hCombo, CB_SETCURSEL, selectedObject->textureWrapMode, 0);
         }
         return (INT_PTR)TRUE;
+
     case WM_COMMAND:
-        if (LOWORD(wParam) == IDOK) {
+        if (LOWORD(wParam) == IDC_BTN_LOAD_TEXTURE) {
+            OPENFILENAMEW ofn = {0};
+            wchar_t szFile[260] = {0};
+            ofn.lStructSize = sizeof(ofn);
+            ofn.hwndOwner = hDlg;
+            ofn.lpstrFile = szFile;
+            ofn.nMaxFile = sizeof(szFile);
+            ofn.lpstrFilter = L"\u4F4D\u56FE\u6587\u4EF6\0*.bmp\0\u6240\u6709\u6587\u4EF6\0*.*\0";
+            ofn.nFilterIndex = 1;
+            ofn.lpstrFileTitle = NULL;
+            ofn.nMaxFileTitle = 0;
+            ofn.lpstrInitialDir = NULL;
+            ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST;
+
+            if (GetOpenFileNameW(&ofn) == TRUE) {
+                wcscpy_s(tempTexturePath, szFile);
+                SetDlgItemTextW(hDlg, IDC_STATIC_TEXTURE_PATH, tempTexturePath);
+                CheckDlgButton(hDlg, IDC_CHECK_TEXTURE, BST_CHECKED);
+            }
+        }
+        else if (LOWORD(wParam) == IDOK) {
             if (selectedObject) {
                 float a = (float)GetDlgItemInt(hDlg, IDC_EDIT_MAT_AMBIENT, NULL, TRUE) / 100.0f;
                 float d = (float)GetDlgItemInt(hDlg, IDC_EDIT_MAT_DIFFUSE, NULL, TRUE) / 100.0f;
@@ -974,6 +1030,26 @@ INT_PTR CALLBACK MaterialDlgProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM 
                 selectedObject->material.diffuse[0] = selectedObject->material.diffuse[1] = selectedObject->material.diffuse[2] = d;
                 selectedObject->material.specular[0] = selectedObject->material.specular[1] = selectedObject->material.specular[2] = s;
                 selectedObject->material.shininess = (float)GetDlgItemInt(hDlg, IDC_EDIT_MAT_SHININESS, NULL, TRUE);
+
+                // Texture Update
+                bool enable = IsDlgButtonChecked(hDlg, IDC_CHECK_TEXTURE) == BST_CHECKED;
+                selectedObject->hasTexture = enable;
+                
+                HWND hCombo = GetDlgItem(hDlg, IDC_COMBO_TEXTURE_WRAP);
+                selectedObject->textureWrapMode = (int)SendMessage(hCombo, CB_GETCURSEL, 0, 0);
+
+                if (enable && wcscmp(selectedObject->texturePath, tempTexturePath) != 0) {
+                    wcscpy_s(selectedObject->texturePath, tempTexturePath);
+                    // Load Texture
+                    if (selectedObject->textureID) glDeleteTextures(1, &selectedObject->textureID);
+                    
+                    HDC hdc = GetDC(g_hwnd);
+                    wglMakeCurrent(hdc, g_hRC);
+                    selectedObject->textureID = LoadTexture(selectedObject->texturePath);
+                    wglMakeCurrent(NULL, NULL);
+                    ReleaseDC(g_hwnd, hdc);
+                }
+
                 InvalidateRect(g_hwnd, NULL, FALSE);
             }
             EndDialog(hDlg, LOWORD(wParam));

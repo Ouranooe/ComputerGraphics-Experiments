@@ -24,6 +24,8 @@
 #define ID_3D_CYLINDER          2003
 #define ID_3D_PLANE             2004
 #define ID_3D_LIGHT_SETTINGS    2005
+#define ID_3D_EDIT_TRANSFORM    2006
+#define ID_3D_EDIT_MATERIAL     2007
 
 // Dialog IDs
 #define IDD_TRANSFORM_DIALOG    2100
@@ -49,6 +51,11 @@
 #define IDC_EDIT_MAT_DIFFUSE    2213
 #define IDC_EDIT_MAT_SPECULAR   2214
 #define IDC_EDIT_MAT_SHININESS  2215
+
+#define IDC_BTN_LOAD_TEXTURE    2216
+#define IDC_CHECK_TEXTURE       2217
+#define IDC_STATIC_TEXTURE_PATH 2218
+#define IDC_COMBO_TEXTURE_WRAP  2219
 
 // 新对象的下一组默认值
 //

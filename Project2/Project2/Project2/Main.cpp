@@ -121,6 +121,11 @@ static void UpdateMenu(HWND hwnd) {
         AppendMenuW(hSettingsMenu, MF_STRING, ID_3D_LIGHT_SETTINGS, L"光源设置");
         AppendMenuW(hMenu, MF_POPUP, reinterpret_cast<UINT_PTR>(hSettingsMenu), L"场景设置");
 
+        HMENU hEditMenu = CreateMenu();
+        AppendMenuW(hEditMenu, MF_STRING, ID_3D_EDIT_TRANSFORM, L"物体变换");
+        AppendMenuW(hEditMenu, MF_STRING, ID_3D_EDIT_MATERIAL, L"物体材质与纹理");
+        AppendMenuW(hMenu, MF_POPUP, reinterpret_cast<UINT_PTR>(hEditMenu), L"编辑");
+
         HMENU hSystemMenu = CreateMenu();
         AppendMenuW(hSystemMenu, MF_STRING, ID_MODE_SWITCH, L"返回 2D 模式");
         AppendMenuW(hMenu, MF_POPUP, reinterpret_cast<UINT_PTR>(hSystemMenu), L"系统");
