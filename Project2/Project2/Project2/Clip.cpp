@@ -641,6 +641,16 @@ std::vector<Point> ClipPolygon_WeilerAtherton_Rect(const std::vector<Point>& pol
     return results[0];
 }
 
+// 将矩形转换为4个顶点的多边形
+static std::vector<Point> RectToPolygon(const std::vector<Point>& v) {
+    if (v.size() < 2) return {};
+    int x1 = min(v[0].x, v[1].x);
+    int x2 = max(v[0].x, v[1].x);
+    int y1 = min(v[0].y, v[1].y);
+    int y2 = max(v[0].y, v[1].y);
+    return {{x1, y1}, {x2, y1}, {x2, y2}, {x1, y2}};
+}
+
 void ClipAllPolygons_SH(const RECT& clip) {
     std::vector<Shape> newShapes;
     
@@ -651,6 +661,18 @@ void ClipAllPolygons_SH(const RECT& clip) {
             for (auto& clippedPoly : clippedPolygons) {
                 if (clippedPoly.size() >= 3) {
                     Shape ns = s;
+                    ns.vertices = clippedPoly;
+                    newShapes.push_back(ns);
+                }
+            }
+        } else if (s.type == DrawMode::DrawRectangle) {
+            // 将矩形转换为多边形再裁剪
+            std::vector<Point> rectPoly = RectToPolygon(s.vertices);
+            auto clippedPolygons = ClipPolygon_SutherlandHodgman_Multi(rectPoly, clip);
+            for (auto& clippedPoly : clippedPolygons) {
+                if (clippedPoly.size() >= 3) {
+                    Shape ns = s;
+                    ns.type = DrawMode::DrawPolygon;  // 裁剪后变成多边形
                     ns.vertices = clippedPoly;
                     newShapes.push_back(ns);
                 }
@@ -673,6 +695,18 @@ void ClipAllPolygons_WA(const RECT& clip) {
             for (auto& clippedPoly : clippedPolygons) {
                 if (clippedPoly.size() >= 3) {
                     Shape ns = s;
+                    ns.vertices = clippedPoly;
+                    newShapes.push_back(ns);
+                }
+            }
+        } else if (s.type == DrawMode::DrawRectangle) {
+            // 将矩形转换为多边形再裁剪
+            std::vector<Point> rectPoly = RectToPolygon(s.vertices);
+            auto clippedPolygons = ClipPolygon_WeilerAtherton_Rect_Multi(rectPoly, clip);
+            for (auto& clippedPoly : clippedPolygons) {
+                if (clippedPoly.size() >= 3) {
+                    Shape ns = s;
+                    ns.type = DrawMode::DrawPolygon;  // 裁剪后变成多边形
                     ns.vertices = clippedPoly;
                     newShapes.push_back(ns);
                 }
