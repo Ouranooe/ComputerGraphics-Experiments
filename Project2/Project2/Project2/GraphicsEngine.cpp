@@ -11,11 +11,15 @@
 #include <commdlg.h>
 #include <algorithm>
 #include <cmath>
+#include <gdiplus.h>
 
 #pragma comment(lib, "gdi32.lib")
 #pragma comment(lib, "user32.lib")
 #pragma comment(lib, "opengl32.lib")
 #pragma comment(lib, "glu32.lib")
+#pragma comment(lib, "gdiplus.lib")
+
+using namespace Gdiplus;
 
 namespace GraphicsEngine {
 
@@ -23,6 +27,7 @@ namespace GraphicsEngine {
 HWND g_hwnd = nullptr;
 HDC g_hdcMem = nullptr;
 HBITMAP g_hbmMem = nullptr;
+ULONG_PTR g_gdiplusToken;
 
 DrawMode g_currentMode = DrawMode::None;
 std::vector<Shape> g_shapes;
@@ -157,6 +162,9 @@ static void RedrawAllShapes(HDC hdc) {
 
 // ===== Public API =====
 void Initialize(HWND hwnd) {
+    GdiplusStartupInput gdiplusStartupInput;
+    GdiplusStartup(&g_gdiplusToken, &gdiplusStartupInput, NULL);
+
     g_hwnd = hwnd;
     RecreateBackBuffer(hwnd);
     InitGL(hwnd);
@@ -180,6 +188,8 @@ void Shutdown() {
     g_currentPoints.clear();
     g_isDrawing = false;
     g_selectedShapeIndex = -1;
+
+    GdiplusShutdown(g_gdiplusToken);
 }
 
 void Resize(HWND hwnd) {
@@ -655,30 +665,27 @@ void InitGL(HWND hwnd) {
 }
 
 GLuint LoadTexture(const wchar_t* filename) {
-    HBITMAP hBmp = (HBITMAP)LoadImageW(NULL, filename, IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
-    if (!hBmp) return 0;
+    Bitmap bitmap(filename);
+    if (bitmap.GetLastStatus() != Ok) return 0;
 
-    BITMAP bm;
-    GetObject(hBmp, sizeof(bm), &bm);
+    BitmapData bitmapData;
+    Rect rect(0, 0, bitmap.GetWidth(), bitmap.GetHeight());
+
+    // Lock the bits
+    bitmap.LockBits(&rect, ImageLockModeRead, PixelFormat32bppARGB, &bitmapData);
 
     GLuint texID;
     glGenTextures(1, &texID);
     glBindTexture(GL_TEXTURE_2D, texID);
-
-    int bpp = bm.bmBitsPixel;
-    GLenum format = GL_BGR_EXT;
-    if (bpp == 32) format = GL_BGRA_EXT;
-    else if (bpp == 24) format = GL_BGR_EXT;
-    else if (bpp == 8) format = GL_LUMINANCE; // Simple fallback
 
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
 
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, bm.bmWidth, bm.bmHeight, 0, format, GL_UNSIGNED_BYTE, bm.bmBits);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, bitmap.GetWidth(), bitmap.GetHeight(), 0, GL_BGRA_EXT, GL_UNSIGNED_BYTE, bitmapData.Scan0);
 
-    DeleteObject(hBmp);
+    bitmap.UnlockBits(&bitmapData);
     return texID;
 }
 
@@ -1008,7 +1015,7 @@ INT_PTR CALLBACK MaterialDlgProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM 
             ofn.hwndOwner = hDlg;
             ofn.lpstrFile = szFile;
             ofn.nMaxFile = sizeof(szFile);
-            ofn.lpstrFilter = L"\u4F4D\u56FE\u6587\u4EF6\0*.bmp\0\u6240\u6709\u6587\u4EF6\0*.*\0";
+            ofn.lpstrFilter = L"Image Files\0*.bmp;*.jpg;*.jpeg;*.png\0All Files\0*.*\0";
             ofn.nFilterIndex = 1;
             ofn.lpstrFileTitle = NULL;
             ofn.nMaxFileTitle = 0;
