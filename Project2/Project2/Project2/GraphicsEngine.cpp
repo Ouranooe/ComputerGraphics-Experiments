@@ -52,6 +52,7 @@ Object3D* selectedObject = nullptr;
 Camera g_camera = { {0, 5, 10}, {0, 0, 0}, {0, 1, 0} };
 Light g_light = { {5, 10, 5}, {0.2f, 0.2f, 0.2f, 1.0f}, {0.8f, 0.8f, 0.8f, 1.0f}, {1.0f, 1.0f, 1.0f, 1.0f} };
 Point g_lastMousePos = {0, 0};
+bool g_isSettingLightPos = false;
 
 // ===== Internal helper functions =====
 void RecreateBackBuffer(HWND hwnd) {
@@ -214,6 +215,14 @@ void HandleCommand(int commandId) {
         case ID_3D_LIGHT_SETTINGS: 
             DialogBox(GetModuleHandle(NULL), MAKEINTRESOURCE(IDD_LIGHT_DIALOG), g_hwnd, LightDlgProc); 
             break;
+        case ID_3D_LIGHT_POS_VISUAL:
+            g_isSettingLightPos = !g_isSettingLightPos;
+            if (g_isSettingLightPos) {
+                SetCursor(LoadCursor(NULL, IDC_CROSS));
+            } else {
+                SetCursor(LoadCursor(NULL, IDC_ARROW));
+            }
+            break;
         case ID_3D_EDIT_TRANSFORM:
             if (selectedObject)
                 DialogBox(GetModuleHandle(NULL), MAKEINTRESOURCE(IDD_TRANSFORM_DIALOG), g_hwnd, TransformDlgProc);
@@ -225,6 +234,25 @@ void HandleCommand(int commandId) {
                 DialogBox(GetModuleHandle(NULL), MAKEINTRESOURCE(IDD_MATERIAL_DIALOG), g_hwnd, MaterialDlgProc);
             else
                 MessageBox(g_hwnd, L"\u8BF7\u5148\u9009\u62E9\u4E00\u4E2A\u7269\u4F53", L"\u63D0\u793A", MB_OK | MB_ICONINFORMATION);
+            break;
+        case ID_3D_DELETE_OBJECT:
+            if (selectedObject) {
+                // 查找并删除选中的物体
+                auto it = std::find_if(g_objects.begin(), g_objects.end(),
+                    [](const Object3D& obj) { return &obj == selectedObject; });
+                if (it != g_objects.end()) {
+                    // 如果有纹理，删除纹理对象
+                    if (it->hasTexture && it->textureID) {
+                        glDeleteTextures(1, &it->textureID);
+                    }
+                    g_objects.erase(it);
+                    selectedObject = nullptr;
+                    InvalidateRect(g_hwnd, NULL, FALSE);
+                }
+            }
+            else {
+                MessageBox(g_hwnd, L"\u8BF7\u5148\u9009\u62E9\u4E00\u4E2A\u7269\u4F53", L"\u63D0\u793A", MB_OK | MB_ICONINFORMATION);
+            }
             break;
         }
         return;
@@ -272,10 +300,51 @@ void HandleCommand(int commandId) {
     }
 }
 
+void SetLightPositionFromScreen(int x, int y) {
+    if (!g_hRC) return;
+    HDC hdc = GetDC(g_hwnd);
+    wglMakeCurrent(hdc, g_hRC);
+
+    GLdouble modelview[16], projection[16];
+    GLint viewport[4];
+    glGetDoublev(GL_MODELVIEW_MATRIX, modelview);
+    glGetDoublev(GL_PROJECTION_MATRIX, projection);
+    glGetIntegerv(GL_VIEWPORT, viewport);
+
+    GLdouble nearX, nearY, nearZ;
+    GLdouble farX, farY, farZ;
+
+    // 获取射线起点和终点
+    gluUnProject(x, viewport[3] - y, 0.0, modelview, projection, viewport, &nearX, &nearY, &nearZ);
+    gluUnProject(x, viewport[3] - y, 1.0, modelview, projection, viewport, &farX, &farY, &farZ);
+
+    // 射线方程 P = N + t * (F - N)
+    // 我们希望与平面 Y = g_light.position.y 相交 (保持光源高度不变，只改变水平位置)
+    double planeY = g_light.position.y; 
+    
+    double dirY = farY - nearY;
+    if (abs(dirY) > 1e-6) {
+        double t = (planeY - nearY) / dirY;
+        g_light.position.x = (float)(nearX + t * (farX - nearX));
+        g_light.position.z = (float)(nearZ + t * (farZ - nearZ));
+        // Y 保持不变
+    }
+
+    wglMakeCurrent(NULL, NULL);
+    ReleaseDC(g_hwnd, hdc);
+    InvalidateRect(g_hwnd, NULL, FALSE);
+}
+
 void HandleLButtonDown(int x, int y) {
     if (is3DMode) {
-        SelectObject3D(x, y);
-        g_lastMousePos = {x, y};
+        if (g_isSettingLightPos) {
+            SetLightPositionFromScreen(x, y);
+            g_isSettingLightPos = false;
+            SetCursor(LoadCursor(NULL, IDC_ARROW));
+        } else {
+            SelectObject3D(x, y);
+            g_lastMousePos = {x, y};
+        }
         return;
     }
 
@@ -456,9 +525,34 @@ static void DrawClipPreviewRect(HDC hdc, const Point& p1, const Point& p2) {
     DeleteObject(hPen);
 }
 
+void HandleRButtonDown(int x, int y) {
+    if (!is3DMode) return;
+
+    // 尝试选中点击处的物体
+    SelectObject3D(x, y);
+
+    // 如果有物体被选中，弹出上下文菜单
+    if (selectedObject) {
+        HMENU hPopup = CreatePopupMenu();
+        AppendMenuW(hPopup, MF_STRING, ID_3D_EDIT_TRANSFORM, L"\u53D8\u6362 (Transform)");
+        AppendMenuW(hPopup, MF_STRING, ID_3D_EDIT_MATERIAL, L"\u6750\u8D28\u4E0E\u7EB9\u7406 (Material)");
+        AppendMenuW(hPopup, MF_SEPARATOR, 0, NULL);
+        AppendMenuW(hPopup, MF_STRING, ID_3D_DELETE_OBJECT, L"\u5220\u9664 (Delete)");
+
+        POINT pt = { x, y };
+        ClientToScreen(g_hwnd, &pt);
+        TrackPopupMenu(hPopup, TPM_RIGHTBUTTON, pt.x, pt.y, 0, g_hwnd, NULL);
+        DestroyMenu(hPopup);
+    }
+}
+
 void HandleMouseMove(int x, int y) {
     if (is3DMode) {
-        if (GetKeyState(VK_LBUTTON) & 0x8000) {
+        if (g_isSettingLightPos) {
+            // 触发重绘以更新预览点
+            InvalidateRect(g_hwnd, NULL, FALSE);
+        }
+        else if (GetKeyState(VK_LBUTTON) & 0x8000) {
             float dx = (float)(x - g_lastMousePos.x) * 0.05f;
             float dy = (float)(y - g_lastMousePos.y) * 0.05f;
 
@@ -722,6 +816,10 @@ void DrawScene(HDC hdc) {
     glLightfv(GL_LIGHT0, GL_DIFFUSE, g_light.diffuse);
     glLightfv(GL_LIGHT0, GL_SPECULAR, g_light.specular);
 
+    // 设置全局环境光，确保纹理在无光照区域也有一定亮度
+    float globalAmbient[] = { 0.5f, 0.5f, 0.5f, 1.0f };
+    glLightModelfv(GL_LIGHT_MODEL_AMBIENT, globalAmbient);
+
     //  绘制坐标轴
     glDisable(GL_LIGHTING);
     glEnable(GL_BLEND);
@@ -744,6 +842,74 @@ void DrawScene(HDC hdc) {
     glVertex3f(0.0f, 0.0f, -100.0f);
     glVertex3f(0.0f, 0.0f, 100.0f);
     glEnd();
+
+    // 如果处于光源设置模式，绘制预览点
+    if (g_isSettingLightPos) {
+        // 计算鼠标对应的 3D 位置
+        GLdouble modelview[16], projection[16];
+        GLint viewport[4];
+        glGetDoublev(GL_MODELVIEW_MATRIX, modelview);
+        glGetDoublev(GL_PROJECTION_MATRIX, projection);
+        glGetIntegerv(GL_VIEWPORT, viewport);
+
+        GLdouble nearX, nearY, nearZ;
+        GLdouble farX, farY, farZ;
+        
+        // 使用当前鼠标位置
+        gluUnProject(g_currentMousePos.x, viewport[3] - g_currentMousePos.y, 0.0, modelview, projection, viewport, &nearX, &nearY, &nearZ);
+        gluUnProject(g_currentMousePos.x, viewport[3] - g_currentMousePos.y, 1.0, modelview, projection, viewport, &farX, &farY, &farZ);
+
+        double planeY = g_light.position.y;
+        double dirY = farY - nearY;
+        if (abs(dirY) > 1e-6) {
+            double t = (planeY - nearY) / dirY;
+            float px = (float)(nearX + t * (farX - nearX));
+            float pz = (float)(nearZ + t * (farZ - nearZ));
+
+            // 绘制光源预览标记（小圆圈+中心点）
+            glPushAttrib(GL_ENABLE_BIT | GL_CURRENT_BIT | GL_LINE_BIT);
+            glDisable(GL_LIGHTING);
+            glDisable(GL_TEXTURE_2D);
+            glDisable(GL_DEPTH_TEST); // 确保标记始终可见，不被物体遮挡
+
+            glColor3f(1.0f, 0.9f, 0.0f); // 金黄色
+
+            // 1. 光源位置的小球
+            glPushMatrix();
+            glTranslatef(px, (float)planeY, pz);
+            GLUquadric* quad = gluNewQuadric();
+            gluSphere(quad, 0.2, 16, 16);
+            gluDeleteQuadric(quad);
+            
+            // 2. 光源周围的圆环 (Halo)
+            glBegin(GL_LINE_LOOP);
+            for(int i=0; i<32; ++i) {
+                float theta = 2.0f * 3.14159f * i / 32.0f;
+                glVertex3f(0.6f * cos(theta), 0.0f, 0.6f * sin(theta));
+            }
+            glEnd();
+            glPopMatrix();
+
+            // 3. 连接地面的垂线
+            glBegin(GL_LINES);
+            glVertex3f(px, (float)planeY, pz);
+            glVertex3f(px, 0.0f, pz);
+            glEnd();
+
+            // 4. 地面投影圆环 (Shadow)
+            glPushMatrix();
+            glTranslatef(px, 0.0f, pz);
+            glBegin(GL_LINE_LOOP);
+            for(int i=0; i<32; ++i) {
+                float theta = 2.0f * 3.14159f * i / 32.0f;
+                glVertex3f(0.4f * cos(theta), 0.0f, 0.4f * sin(theta));
+            }
+            glEnd();
+            glPopMatrix();
+
+            glPopAttrib();
+        }
+    }
 
     glDisable(GL_BLEND);
     glEnable(GL_LIGHTING);
@@ -786,7 +952,19 @@ void DrawScene(HDC hdc) {
 
         switch (obj.type) {
             case ModelType::Sphere: gluSphere(quad, 1.0, 32, 32); break;
-            case ModelType::Cylinder: gluCylinder(quad, 1.0, 1.0, 2.0, 32, 1); break;
+            case ModelType::Cylinder: 
+                gluCylinder(quad, 1.0, 1.0, 2.0, 32, 1); 
+                // 绘制底面
+                glPushMatrix();
+                glRotatef(180, 1, 0, 0);
+                gluDisk(quad, 0.0, 1.0, 32, 1);
+                glPopMatrix();
+                // 绘制顶面
+                glPushMatrix();
+                glTranslatef(0, 0, 2.0);
+                gluDisk(quad, 0.0, 1.0, 32, 1);
+                glPopMatrix();
+                break;
             case ModelType::Cube: {
                 glBegin(GL_QUADS);
                 // Front Face
@@ -830,7 +1008,8 @@ void AddObject3D(ModelType type) {
     obj.position = {0, 0, 0};
     obj.rotation = {0, 0, 0};
     obj.scale = {1, 1, 1};
-    obj.material = {{0.2f, 0.2f, 0.2f, 1.0f}, {0.8f, 0.8f, 0.8f, 1.0f}, {0.0f, 0.0f, 0.0f, 1.0f}, 0.0f};
+    // 提高默认材质的环境光反射系数，配合全局环境光，避免纹理过暗
+    obj.material = {{0.6f, 0.6f, 0.6f, 1.0f}, {0.8f, 0.8f, 0.8f, 1.0f}, {0.0f, 0.0f, 0.0f, 1.0f}, 0.0f};
     obj.selected = false;
     g_objects.push_back(obj);
     if (g_hwnd) InvalidateRect(g_hwnd, NULL, FALSE);

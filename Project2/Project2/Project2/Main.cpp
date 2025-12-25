@@ -67,6 +67,10 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         GraphicsEngine::HandleLButtonDown(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam));
         return 0;
 
+    case WM_RBUTTONDOWN:
+        GraphicsEngine::HandleRButtonDown(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam));
+        return 0;
+
     case WM_LBUTTONDBLCLK:
         if (GraphicsEngine::is3DMode && GraphicsEngine::selectedObject) {
             if (GetKeyState(VK_CONTROL) & 0x8000) {
@@ -118,13 +122,15 @@ static void UpdateMenu(HWND hwnd) {
         AppendMenuW(hMenu, MF_POPUP, reinterpret_cast<UINT_PTR>(h3DMenu), L"3D 图元");
 
         HMENU hSettingsMenu = CreateMenu();
-        AppendMenuW(hSettingsMenu, MF_STRING, ID_3D_LIGHT_SETTINGS, L"光源设置");
-        AppendMenuW(hMenu, MF_POPUP, reinterpret_cast<UINT_PTR>(hSettingsMenu), L"场景设置");
+        AppendMenuW(hSettingsMenu, MF_STRING, ID_3D_LIGHT_SETTINGS, L"\u5149\u6E90\u8BBE\u7F6E");
+        AppendMenuW(hSettingsMenu, MF_STRING, ID_3D_LIGHT_POS_VISUAL, L"\u53EF\u89C6\u5316\u8BBE\u7F6E\u5149\u6E90\u4F4D\u7F6E");
+        AppendMenuW(hMenu, MF_POPUP, reinterpret_cast<UINT_PTR>(hSettingsMenu), L"\u573A\u666F\u8BBE\u7F6E");
 
         HMENU hEditMenu = CreateMenu();
-        AppendMenuW(hEditMenu, MF_STRING, ID_3D_EDIT_TRANSFORM, L"物体变换");
-        AppendMenuW(hEditMenu, MF_STRING, ID_3D_EDIT_MATERIAL, L"物体材质与纹理");
-        AppendMenuW(hMenu, MF_POPUP, reinterpret_cast<UINT_PTR>(hEditMenu), L"编辑");
+        AppendMenuW(hEditMenu, MF_STRING, ID_3D_EDIT_TRANSFORM, L"\u7269\u4F53\u53D8\u6362");
+        AppendMenuW(hEditMenu, MF_STRING, ID_3D_EDIT_MATERIAL, L"\u7269\u4F53\u6750\u8D28\u4E0E\u7EB9\u7406");
+        AppendMenuW(hEditMenu, MF_STRING, ID_3D_DELETE_OBJECT, L"\u5220\u9664\u9009\u4E2D\u7269\u4F53");
+        AppendMenuW(hMenu, MF_POPUP, reinterpret_cast<UINT_PTR>(hEditMenu), L"\u7F16\u8F91");
 
         HMENU hSystemMenu = CreateMenu();
         AppendMenuW(hSystemMenu, MF_STRING, ID_MODE_SWITCH, L"返回 2D 模式");

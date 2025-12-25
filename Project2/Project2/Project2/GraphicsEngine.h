@@ -36,6 +36,8 @@ constexpr UINT ID_3D_CUBE = 2002;
 constexpr UINT ID_3D_CYLINDER = 2003;
 constexpr UINT ID_3D_PLANE = 2004;
 constexpr UINT ID_3D_LIGHT_SETTINGS = 2005;
+constexpr UINT ID_3D_DELETE_OBJECT = 2008;
+constexpr UINT ID_3D_LIGHT_POS_VISUAL = 2009;
 
 enum class DrawMode {
     None,
@@ -127,6 +129,7 @@ void Shutdown();
 void Resize(HWND hwnd);
 void HandleCommand(int commandId);
 void HandleLButtonDown(int x, int y);
+void HandleRButtonDown(int x, int y);
 void HandleMouseMove(int x, int y);
 void HandleMouseWheel(short delta);
 void OnPaint(HWND hwnd);
